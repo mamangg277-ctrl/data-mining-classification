@@ -44,6 +44,16 @@ def test_train_model_returns_metadata_and_metrics(binary_frame):
     assert len(result.y_test) == len(result.y_proba)
 
 
+def test_train_model_stores_feature_values(binary_frame):
+    result = train_model(binary_frame, build_config())
+    values = result.metadata["feature_values"]
+    assert sorted(values["region"]) == ["east", "north", "south", "west"]
+    assert sorted(values["has_default"]) == [False, True]
+    assert "age" not in values
+    assert "income" not in values
+    assert "approved" not in values
+
+
 def test_training_is_deterministic(binary_frame):
     first = train_model(binary_frame, build_config())
     second = train_model(binary_frame, build_config())

@@ -30,7 +30,7 @@ from werkzeug.utils import secure_filename
 
 from dc.eda import inspect_dataframe, save_report
 from dc.evaluate import compute_metrics
-from dc.io import find_binary_targets, load_dataframe, save_dataframe
+from dc.io import feature_value_options, find_binary_targets, load_dataframe, save_dataframe
 from dc.models import MODEL_LABELS
 from dc.predict import predict_frame, predict_probabilities, predict_record
 from dc.train import TrainConfig, TrainResult, load_bundle, save_result, train_model
@@ -841,14 +841,64 @@ def evaluate_page():
     return render_template("evaluate.html", bundle=bundle, threshold=threshold, metrics=metrics, model_labels=MODEL_LABELS)
 
 
+def _numeric_feature_names(metadata: dict[str, Any], features: list[str]) -> set[str]:
+    dtypes = metadata.get("feature_dtypes", {})
+    numeric = set()
+    for name in features:
+        try:
+            if np.dtype(str(dtypes.get(name, ""))).kind in "iuf":
+                numeric.add(name)
+        except TypeError:
+            continue
+    return numeric
+
+
+def _example_record(frame: pd.DataFrame, features: list[str], target: str | None) -> dict[str, Any] | None:
+    if not features or any(f not in frame.columns for f in features):
+        return None
+    complete = frame.dropna(subset=features)
+    row = (complete if not complete.empty else frame).iloc[0]
+    record = {}
+    for f in features:
+        value = row[f]
+        if hasattr(value, "item"):
+            value = value.item()
+        record[f] = "" if pd.isna(value) else value
+    result: dict[str, Any] = {"record": record}
+    if target and target in frame.columns:
+        actual = row[target]
+        result["target"] = actual.item() if hasattr(actual, "item") else actual
+    return result
+
+
 @app.route("/predict", methods=["GET", "POST"])
 def predict_page():
     bundle = _load_current_bundle()
     if not bundle:
         flash("Train or load a model first.", "error")
         return redirect(url_for("train_page"))
-    features = bundle.get("metadata", {}).get("feature_columns", [])
-    threshold = float(session.get("threshold", bundle.get("metadata", {}).get("threshold", 0.5)))
+    metadata = bundle.get("metadata", {})
+    features = metadata.get("feature_columns", [])
+    threshold = float(session.get("threshold", metadata.get("threshold", 0.5)))
+    feature_values = dict(metadata.get("feature_values") or {})
+    example = None
+    path = _get_active_file_path()
+    if path:
+        try:
+            frame = load_dataframe(str(path))
+        except Exception:
+            frame = None
+        if frame is not None:
+            unresolved = [f for f in features if f not in feature_values and f in frame.columns]
+            if unresolved:
+                feature_values.update(feature_value_options(frame, unresolved))
+            example = _example_record(frame, features, metadata.get("target"))
+    example_target_positive = bool(
+        example
+        and example.get("target") is not None
+        and str(example.get("target")) == str(metadata.get("positive_label"))
+    )
+    numeric_features = _numeric_feature_names(metadata, features)
     result = None
     if request.method == "POST" and request.form.get("mode") == "manual":
         record = {}
@@ -858,7 +908,18 @@ def predict_page():
             result = predict_record(bundle, record, threshold=threshold)
         except Exception as e:
             flash(f"Prediction failed: {e}", "error")
-    return render_template("predict.html", bundle=bundle, features=features, threshold=threshold, result=result, model_labels=MODEL_LABELS)
+    return render_template(
+        "predict.html",
+        bundle=bundle,
+        features=features,
+        threshold=threshold,
+        result=result,
+        feature_values=feature_values,
+        numeric_features=numeric_features,
+        example=example,
+        example_target_positive=example_target_positive,
+        model_labels=MODEL_LABELS,
+    )
 
 
 @app.route("/predict/batch", methods=["POST"])

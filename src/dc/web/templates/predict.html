@@ -36,13 +36,47 @@
         Prediksi Manual (Input Fitur Per Kasus)
       </div>
       <div class="card-body">
+        {% if example %}
+        <!-- Example Record -->
+        <div class="mb-4 p-3 border rounded bg-light">
+          <div class="d-flex justify-content-between align-items-center mb-2">
+            <span class="small fw-bold text-secondary text-uppercase">Contoh Data dari Dataset Aktif:</span>
+            {% if example.target is not none %}
+              <span class="badge {% if example_target_positive %}bg-success{% else %}bg-secondary{% endif %} fs-6 px-3 py-1">
+                {{ bundle.metadata.target if bundle.metadata else '-' }} = {{ example.target }}
+              </span>
+            {% endif %}
+          </div>
+          <div class="row g-2 small" style="max-height: 160px; overflow-y: auto;">
+            {% for f, v in example.record.items() %}
+              <div class="col-md-6 col-lg-4">
+                <span class="text-secondary">{{ f }}:</span>
+                <span class="text-dark fw-semibold">{{ v if v != '' else '-' }}</span>
+              </div>
+            {% endfor %}
+          </div>
+          <div class="text-muted small mt-2 border-top pt-2">Gunakan nilai di atas sebagai referensi saat mengisi formulir prediksi.</div>
+        </div>
+        {% endif %}
+
         <form method="post">
           <input type="hidden" name="mode" value="manual">
           <div class="row g-2" style="max-height: 400px; overflow-y: auto;">
             {% for f in features %}
               <div class="col-md-6">
                 <label class="form-label small text-secondary mb-1">{{ f }}</label>
+                {% if f in feature_values %}
+                <select class="form-select form-select-sm" name="{{ f }}" required>
+                  <option value="" disabled selected>Pilih nilai {{ f }}...</option>
+                  {% for v in feature_values[f] %}
+                  <option value="{{ v }}">{{ v }}</option>
+                  {% endfor %}
+                </select>
+                {% elif f in numeric_features %}
+                <input class="form-control form-control-sm" type="number" step="any" name="{{ f }}" required>
+                {% else %}
                 <input class="form-control form-control-sm" name="{{ f }}" required>
+                {% endif %}
               </div>
             {% else %}
               <div class="col-12 text-muted small">Belum ada fitur model yang dimuat. Silakan muat atau latih model terlebih dahulu.</div>

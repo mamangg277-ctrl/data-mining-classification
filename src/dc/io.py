@@ -166,6 +166,26 @@ def unique_values(frame: pd.DataFrame, column: str, limit: int = 50) -> list[Any
     return values[:limit]
 
 
+def feature_value_options(
+    frame: pd.DataFrame,
+    columns: list[str] | None = None,
+    limit: int = 50,
+) -> dict[str, list[Any]]:
+    """Collect the distinct values seen in low-cardinality (categorical/boolean) columns."""
+    row_count = len(frame)
+    names = [str(name) for name in (frame.columns if columns is None else columns)]
+    options: dict[str, list[Any]] = {}
+    for name in names:
+        if name not in frame.columns:
+            continue
+        if column_kind(frame[name], row_count) not in ("categorical", "boolean"):
+            continue
+        values = unique_values(frame, name, limit)
+        if values:
+            options[name] = values
+    return options
+
+
 def get_feature_columns(
     frame: pd.DataFrame,
     target: str,

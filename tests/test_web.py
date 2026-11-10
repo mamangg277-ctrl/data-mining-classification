@@ -85,9 +85,9 @@ def test_storage_page_renders_artifacts(storage_dirs):
 
     assert response.status_code == 200
     html = response.get_data(as_text=True)
-    assert "Storage &amp; Cleanup" in html
+    assert "Storage Management" in html
     assert "data.csv" in html
-    assert "Delete all artifacts" in html
+    assert "Hapus Seluruh Data Penyimpanan" in html
 
 
 def test_storage_delete_model_removes_files_history_and_reports(storage_dirs):
@@ -257,6 +257,102 @@ def test_train_page_rejects_non_binary_target(tmp_path):
     html = response.get_data(as_text=True)
     assert "binary classification needs exactly 2" in html
     assert "approved" in html
+
+
+def test_train_page_renders_exclude_checkboxes(tmp_path):
+    frame = sample_frame()
+    path = tmp_path / "data.csv"
+    frame.to_csv(path, index=False)
+
+    client = app.test_client()
+    with client.session_transaction() as session:
+        session["current_file"] = str(path)
+
+    response = client.get("/train")
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert 'name="exclude" value="age"' in html
+    assert 'name="exclude" value="sex"' in html
+    assert 'name="exclude" value="approved"' in html
+    assert 'id="excludeSelectAll"' in html
+    assert 'id="excludeClearAll"' in html
+
+
+def test_predict_page_renders_dropdowns_example_and_numbers(storage_dirs, binary_frame, tmp_path):
+    result = train_model(
+        binary_frame,
+        TrainConfig(target="approved", models=["logistic"], cv_folds=3, seed=7),
+    )
+    model_path = save_result(result, storage_dirs["models"] / "model.joblib")
+    data_path = tmp_path / "data.csv"
+    binary_frame.to_csv(data_path, index=False)
+
+    client = app.test_client()
+    with client.session_transaction() as session:
+        session["current_model_path"] = str(model_path)
+        session["current_file"] = str(data_path)
+
+    response = client.get("/predict")
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert '<select class="form-select form-select-sm" name="region" required>' in html
+    assert '<option value="north">north</option>' in html
+    assert 'type="number" step="any" name="age"' in html
+    assert "Contoh Data" in html
+    assert "region" in html
+
+
+def test_predict_page_falls_back_to_dataset_for_legacy_model(storage_dirs, binary_frame, tmp_path):
+    result = train_model(
+        binary_frame,
+        TrainConfig(target="approved", models=["logistic"], cv_folds=3, seed=7),
+    )
+    result.metadata.pop("feature_values", None)
+    model_path = save_result(result, storage_dirs["models"] / "model.joblib")
+    data_path = tmp_path / "data.csv"
+    binary_frame.to_csv(data_path, index=False)
+
+    client = app.test_client()
+    with client.session_transaction() as session:
+        session["current_model_path"] = str(model_path)
+        session["current_file"] = str(data_path)
+
+    response = client.get("/predict")
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert '<option value="north">north</option>' in html
+
+
+def test_predict_page_manual_submission_with_dropdown_values(storage_dirs, binary_frame, tmp_path):
+    result = train_model(
+        binary_frame,
+        TrainConfig(target="approved", models=["logistic"], cv_folds=3, seed=7),
+    )
+    model_path = save_result(result, storage_dirs["models"] / "model.joblib")
+    data_path = tmp_path / "data.csv"
+    binary_frame.to_csv(data_path, index=False)
+
+    client = app.test_client()
+    with client.session_transaction() as session:
+        session["current_model_path"] = str(model_path)
+        session["current_file"] = str(data_path)
+
+    response = client.post(
+        "/predict",
+        data={
+            "mode": "manual",
+            "age": "41",
+            "income": "6400",
+            "debt_ratio": "0.25",
+            "employment_years": "9",
+            "has_default": "True",
+            "region": "north",
+        },
+    )
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert "Hasil Prediksi" in html
+    assert "Probabilitas" in html
 
 
 def test_train_status_does_not_store_pipeline_in_session(storage_dirs, binary_frame, tmp_path):

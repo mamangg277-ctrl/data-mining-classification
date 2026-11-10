@@ -14,10 +14,10 @@
       <!-- Section 1: Target & Columns -->
       <div class="mb-4">
         <h6 class="fw-bold text-dark mb-3">1. Target &amp; Fitur</h6>
-        <div class="row g-3">
-          <div class="col-md-4">
+        <div class="row g-3 mb-3">
+          <div class="col-md-6">
             <label class="form-label">Target Column <span class="text-danger">*</span></label>
-            <select class="form-select" name="target" required>
+            <select class="form-select" name="target" id="targetSelect" required>
               {% for col in columns %}
                 <option value="{{ col }}" {% if col == selected_target %}selected{% endif %}>
                   {{ col }}{% if col in binary_columns %} (Biner){% endif %}
@@ -27,20 +27,35 @@
             <div class="text-muted small mt-1">Kolom yang memiliki tepat 2 kelas untuk diprediksi.</div>
           </div>
 
-          <div class="col-md-4">
+          <div class="col-md-6">
             <label class="form-label">Positive Class (Opsional)</label>
             <input class="form-control" name="positive_label" placeholder="Contoh: 1, True, Yes, dsb.">
             <div class="text-muted small mt-1">Biarkan kosong untuk penentuan otomatis.</div>
           </div>
+        </div>
 
-          <div class="col-md-4">
-            <label class="form-label">Exclude Columns</label>
-            <select class="form-select" name="exclude" multiple size="3">
-              {% for col in columns %}
-                <option value="{{ col }}">{{ col }}</option>
-              {% endfor %}
-            </select>
-            <div class="text-muted small mt-1">Gunakan Ctrl/Cmd untuk memilih beberapa kolom.</div>
+        <div class="row g-3">
+          <div class="col-12">
+            <div class="d-flex flex-wrap justify-content-between align-items-center mb-2">
+              <label class="form-label mb-0">Exclude Columns</label>
+              <div class="d-flex gap-2">
+                <button class="btn btn-sm btn-outline-secondary py-0" type="button" id="excludeSelectAll">Pilih Semua</button>
+                <button class="btn btn-sm btn-outline-secondary py-0" type="button" id="excludeClearAll">Hapus Semua</button>
+              </div>
+            </div>
+            <div class="border rounded bg-white p-3" style="max-height: 200px; overflow-y: auto;">
+              <div class="row g-2">
+                {% for col in columns %}
+                <div class="col-md-6 col-lg-4">
+                  <div class="form-check">
+                    <input class="form-check-input exclude-col" type="checkbox" name="exclude" value="{{ col }}" id="exc_{{ loop.index }}">
+                    <label class="form-check-label small text-dark" for="exc_{{ loop.index }}">{{ col }}</label>
+                  </div>
+                </div>
+                {% endfor %}
+              </div>
+            </div>
+            <div class="text-muted small mt-1">Centang kolom yang ingin dikecualikan dari fitur model (mis. ID). Kolom target otomatis dinonaktifkan.</div>
           </div>
         </div>
       </div>
@@ -138,5 +153,41 @@
     </form>
   </div>
 </div>
+
+<script>
+(function () {
+  var targetSelect = document.getElementById('targetSelect');
+  var checkboxes = Array.prototype.slice.call(document.querySelectorAll('.exclude-col'));
+  var selectAllBtn = document.getElementById('excludeSelectAll');
+  var clearAllBtn = document.getElementById('excludeClearAll');
+
+  function syncTargetCheckbox() {
+    var target = targetSelect ? targetSelect.value : null;
+    checkboxes.forEach(function (box) {
+      if (box.value === target) {
+        box.disabled = true;
+        box.checked = false;
+      } else {
+        box.disabled = false;
+      }
+    });
+  }
+
+  if (targetSelect) {
+    targetSelect.addEventListener('change', syncTargetCheckbox);
+    syncTargetCheckbox();
+  }
+  if (selectAllBtn) {
+    selectAllBtn.addEventListener('click', function () {
+      checkboxes.forEach(function (box) { if (!box.disabled) box.checked = true; });
+    });
+  }
+  if (clearAllBtn) {
+    clearAllBtn.addEventListener('click', function () {
+      checkboxes.forEach(function (box) { box.checked = false; });
+    });
+  }
+})();
+</script>
 
 {% endblock %}

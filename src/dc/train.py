@@ -10,8 +10,8 @@ from typing import Any
 import joblib
 import numpy as np
 import pandas as pd
-from pandas.api import types as ptypes
 import sklearn
+from pandas.api import types as ptypes
 from sklearn.model_selection import (
     RandomizedSearchCV,
     StratifiedKFold,
@@ -20,7 +20,7 @@ from sklearn.model_selection import (
 )
 
 from dc.evaluate import compute_metrics
-from dc.io import get_feature_columns
+from dc.io import feature_value_options, get_feature_columns
 from dc.models import MODEL_LABELS, build_candidate_models, search_spaces
 from dc.preprocess import build_pipeline
 
@@ -239,6 +239,7 @@ def train_model(
         "negative_label": _jsonable(negative),
         "feature_columns": features,
         "feature_dtypes": {str(column): str(clean[column].dtype) for column in features},
+        "feature_values": feature_value_options(clean, features),
         "model_name": best_name,
         "model_label": MODEL_LABELS.get(best_name, best_name),
         "scoring": config.scoring,
