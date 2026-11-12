@@ -437,7 +437,14 @@ def test_evaluate_and_predict_reload_model_from_path(storage_dirs, binary_frame,
         session["current_model_path"] = str(model_path)
         session["current_file"] = str(data_path)
 
-    assert client.get("/evaluate").status_code == 200
+    response = client.get("/evaluate")
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert "Detail Akurasi per Algoritma" in html
+    assert "Akurasi Uji" in html
+    assert "Data Uji (Test Set)" in html
+    assert "Distribusi Data (Support)" in html
+    assert "Total Baris" in html
     assert client.get("/predict").status_code == 200
     assert client.get("/model").status_code == 200
     with client.session_transaction() as session:
@@ -628,6 +635,11 @@ def test_multiclass_train_evaluate_and_predict(storage_dirs, multiclass_frame, t
     html = response.get_data(as_text=True)
     assert "Metrik Per Kelas" in html
     assert "Multikelas" in html
+    assert "Detail Akurasi per Algoritma" in html
+    assert "Dataset Aktif Saat Ini" in html
+    assert "Total aktual" in html
+    assert "% Aktual" in html
+    assert "Akurasi Kelas" in html
 
     response = client.get("/predict")
     assert response.status_code == 200

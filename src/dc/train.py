@@ -131,6 +131,48 @@ def encode_target_values(series: pd.Series, classes: list[Any]) -> np.ndarray:
     return series.map(encode).to_numpy(dtype=int)
 
 
+def _probabilities_in_class_order(
+    estimator,
+    frame: pd.DataFrame,
+    class_count: int,
+) -> np.ndarray:
+    probabilities = estimator.predict_proba(frame)
+    pipeline_classes = list(estimator.classes_)
+    column_order = [pipeline_classes.index(index) for index in range(class_count)]
+    return probabilities[:, column_order]
+
+
+def _test_scores(
+    estimator,
+    frame: pd.DataFrame,
+    y_true: np.ndarray,
+    class_count: int,
+    classes: list[Any],
+) -> dict[str, Any]:
+    empty = {
+        "test_accuracy": None,
+        "test_precision": None,
+        "test_recall": None,
+        "test_f1": None,
+        "test_roc_auc": None,
+    }
+    try:
+        probabilities = _probabilities_in_class_order(estimator, frame, class_count)
+        if class_count == 2:
+            metrics = compute_metrics(y_true, probabilities[:, 1], threshold=0.5)
+        else:
+            metrics = compute_multiclass_metrics(y_true, probabilities, classes)
+    except Exception:
+        return empty
+    return {
+        "test_accuracy": metrics["accuracy"],
+        "test_precision": metrics["precision"],
+        "test_recall": metrics["recall"],
+        "test_f1": metrics["f1"],
+        "test_roc_auc": metrics["roc_auc"],
+    }
+
+
 def _resolve_scoring(scoring: str, class_count: int) -> str:
     if class_count <= 2:
         return scoring
@@ -264,6 +306,7 @@ def train_model(
                 "score": round(score, 4),
                 "std": round(std, 4),
                 "error": None,
+                **_test_scores(fitted, X_test, y_test, class_count, classes),
             }
         )
         if score > best_score:
@@ -280,10 +323,7 @@ def train_model(
     if progress:
         progress("Evaluating on the held-out test set...", 0.95)
 
-    probabilities = best_estimator.predict_proba(X_test)
-    pipeline_classes = list(best_estimator.classes_)
-    column_order = [pipeline_classes.index(index) for index in range(class_count)]
-    probabilities = probabilities[:, column_order]
+    probabilities = _probabilities_in_class_order(best_estimator, X_test, class_count)
     if class_count == 2:
         y_proba = probabilities[:, 1]
         test_metrics = compute_metrics(y_test, y_proba, threshold=0.5)

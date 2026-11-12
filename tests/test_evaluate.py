@@ -19,6 +19,10 @@ def test_perfect_metrics():
     assert metrics["f1"] == 1.0
     assert metrics["roc_auc"] == 1.0
     assert metrics["confusion_matrix"] == [[2, 0], [0, 2]]
+    assert metrics["support"]["total"] == 4
+    assert metrics["predicted"]["total"] == 4
+    assert metrics["correct"] == 4
+    assert metrics["incorrect"] == 0
 
 
 def test_threshold_changes_predictions():
@@ -61,4 +65,9 @@ def test_multiclass_metrics():
     assert len(metrics["per_class"]) == 3
     assert metrics["confusion_matrix"] == [[2, 0, 0], [0, 2, 0], [0, 0, 2]]
     assert metrics["roc_auc"] == 1.0
+    assert metrics["support"]["total"] == 6
+    assert metrics["predicted"]["total"] == 6
+    assert metrics["correct"] == 6
+    assert metrics["incorrect"] == 0
+    assert all(item["correct"] == item["support"] for item in metrics["per_class"])
     assert "Classes:" in format_metrics(metrics)

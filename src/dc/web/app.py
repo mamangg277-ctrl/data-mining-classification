@@ -905,8 +905,8 @@ def evaluate_page():
         threshold = float(request.form.get("threshold", default_threshold))
     else:
         threshold = default_threshold
-    session["threshold"] = threshold
     metrics = None
+    metrics_source = None
     # try to evaluate on current file if labeled
     if "current_file" in session and request.method == "POST" and request.form.get("evaluate_on_current"):
         try:
@@ -931,11 +931,23 @@ def evaluate_page():
                     metrics = compute_multiclass_metrics(y, probs, classes)
         except Exception as e:
             flash(f"Evaluation failed: {e}", "error")
+
+    if metrics is not None:
+        metrics_source = "current"
+    else:
+        stored_metrics = metadata.get("test_metrics")
+        if isinstance(stored_metrics, dict) and stored_metrics.get("confusion_matrix"):
+            metrics = stored_metrics
+            metrics_source = "training"
+            if task_type == "binary":
+                threshold = float(stored_metrics.get("threshold", default_threshold))
+    session["threshold"] = threshold
     return render_template(
         "evaluate.html",
         bundle=bundle,
         threshold=threshold,
         metrics=metrics,
+        metrics_source=metrics_source,
         task_type=task_type,
         classes=metadata.get("classes") or [],
         model_labels=MODEL_LABELS,

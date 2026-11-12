@@ -42,6 +42,10 @@ def test_train_model_returns_metadata_and_metrics(binary_frame):
     assert result.metadata["positive_label"] is True
     assert result.metadata["feature_columns"]
     assert len(result.y_test) == len(result.y_proba)
+    for row in result.leaderboard:
+        assert row["test_accuracy"] is not None
+        assert 0.0 <= row["test_accuracy"] <= 1.0
+        assert row["test_f1"] is not None
 
 
 def test_train_model_stores_feature_values(binary_frame):

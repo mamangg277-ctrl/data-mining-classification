@@ -86,7 +86,76 @@
   </div>
 </div>
 
+{% set leaderboard = bundle.metadata.get('leaderboard') if bundle.metadata else [] %}
+{% if leaderboard %}
+<div class="card mb-4">
+  <div class="card-header">Detail Akurasi per Algoritma (Data Uji)</div>
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-sm table-striped mb-0 align-middle">
+        <thead>
+          <tr>
+            <th>Model</th>
+            <th class="text-end">Skor CV ({{ bundle.metadata.get('scoring') or 'scoring' }})</th>
+            <th class="text-end">Std CV</th>
+            <th class="text-end">Akurasi Uji</th>
+            <th class="text-end">Precision</th>
+            <th class="text-end">Recall</th>
+            <th class="text-end">F1</th>
+            <th class="text-center">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in leaderboard %}
+          <tr{% if row.get('model') == bundle.metadata.get('model_name') %} class="table-primary"{% endif %}>
+            <td class="fw-semibold">
+              {{ row.get('label') or row.get('model') }}
+              {% if row.get('model') == bundle.metadata.get('model_name') %}
+              <span class="badge bg-primary ms-1">Terpilih</span>
+              {% endif %}
+            </td>
+            <td class="text-end">{% if row.get('score') is not none %}{{ '%.4f'|format(row.get('score')) }}{% else %}-{% endif %}</td>
+            <td class="text-end">{% if row.get('std') is not none %}{{ '%.4f'|format(row.get('std')) }}{% else %}-{% endif %}</td>
+            <td class="text-end fw-semibold">{% if row.get('test_accuracy') is not none %}{{ '%.1f'|format(row.get('test_accuracy') * 100) }}%{% else %}-{% endif %}</td>
+            <td class="text-end">{% if row.get('test_precision') is not none %}{{ '%.4f'|format(row.get('test_precision')) }}{% else %}-{% endif %}</td>
+            <td class="text-end">{% if row.get('test_recall') is not none %}{{ '%.4f'|format(row.get('test_recall')) }}{% else %}-{% endif %}</td>
+            <td class="text-end">{% if row.get('test_f1') is not none %}{{ '%.4f'|format(row.get('test_f1')) }}{% else %}-{% endif %}</td>
+            <td class="text-center">
+              {% if row.get('error') %}
+              <span class="badge bg-danger-subtle text-danger border border-danger" title="{{ row.get('error') }}">Gagal</span>
+              {% else %}
+              <span class="badge bg-success-subtle text-success border border-success">OK</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="card-footer text-muted small">
+    Model terpilih ditentukan oleh skor CV; akurasi dan metrik uji adalah performa pada data uji (held-out test set).
+    Model lama yang belum menyimpan metrik uji per algoritma akan menampilkan tanda &ldquo;-&rdquo;.
+  </div>
+</div>
+{% endif %}
+
 {% if metrics %}
+{% set total_rows = metrics.support.total if metrics.support.total is defined else (metrics.support.negative + metrics.support.positive) %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+  <div class="small text-muted">
+    Sumber metrik:
+    {% if metrics_source == 'training' %}
+    <span class="badge bg-primary-subtle text-primary border border-primary-subtle">Data Uji (Test Set)</span>
+    {% elif metrics_source == 'current' %}
+    <span class="badge bg-success-subtle text-success border border-success">Dataset Aktif Saat Ini</span>
+    {% else %}
+    <span class="badge bg-light text-secondary border">Data Evaluasi</span>
+    {% endif %}
+  </div>
+  <div class="small text-muted">{{ total_rows }} baris dievaluasi</div>
+</div>
+
 <!-- KPI Score Metrics -->
 <div class="row g-3 mb-4">
   <div class="col-6 col-md-4 col-lg-2">
@@ -131,118 +200,169 @@
   </div>
 </div>
 
-<!-- Confusion Matrix & Support -->
-<div class="row g-4 mb-4">
-  <div class="col-lg-7">
-    <div class="card h-100">
-      <div class="card-header">
-        Confusion Matrix{% if metrics.task_type == 'binary' %} (Threshold: {{ '%.2f'|format(metrics.threshold) }}){% endif %}
-      </div>
-      <div class="card-body">
-        {% if metrics.task_type == 'binary' %}
-        <div class="matrix-grid">
-          <div class="matrix-cell cell-tn">
-            <div class="matrix-num">{{ metrics.confusion_matrix[0][0] }}</div>
-            <div class="matrix-lbl">True Negative (TN)</div>
-            <div class="text-muted small" style="font-size: 0.7rem;">Aktual: 0 &bull; Prediksi: 0</div>
-          </div>
-          <div class="matrix-cell cell-error">
-            <div class="matrix-num">{{ metrics.confusion_matrix[0][1] }}</div>
-            <div class="matrix-lbl">False Positive (FP)</div>
-            <div class="text-muted small" style="font-size: 0.7rem;">Aktual: 0 &bull; Prediksi: 1</div>
-          </div>
-          <div class="matrix-cell cell-error">
-            <div class="matrix-num">{{ metrics.confusion_matrix[1][0] }}</div>
-            <div class="matrix-lbl">False Negative (FN)</div>
-            <div class="text-muted small" style="font-size: 0.7rem;">Aktual: 1 &bull; Prediksi: 0</div>
-          </div>
-          <div class="matrix-cell cell-tp">
-            <div class="matrix-num">{{ metrics.confusion_matrix[1][1] }}</div>
-            <div class="matrix-lbl">True Positive (TP)</div>
-            <div class="text-muted small" style="font-size: 0.7rem;">Aktual: 1 &bull; Prediksi: 1</div>
-          </div>
-        </div>
-        <div class="d-flex justify-content-center gap-3 mt-3 text-muted small">
-          <span><span class="badge bg-success-subtle text-success border border-success me-1">Hijau</span> Tebakan Benar</span>
-          <span><span class="badge bg-danger-subtle text-danger border border-danger me-1">Merah</span> Salah Tebak</span>
-        </div>
-        {% else %}
-        <div class="table-responsive">
-          <table class="table table-bordered table-sm text-center mb-0">
-            <thead>
-              <tr>
-                <th class="text-start">Aktual \ Prediksi</th>
-                {% for label in metrics.classes %}<th>{{ label }}</th>{% endfor %}
-              </tr>
-            </thead>
-            <tbody>
-              {% for row in metrics.confusion_matrix %}
-              {% set row_index = loop.index0 %}
-              <tr>
-                <th class="text-start">{{ metrics.classes[row_index] }}</th>
-                {% for value in row %}
-                <td class="{% if loop.index0 == row_index %}table-success fw-bold{% endif %}">{{ value }}</td>
-                {% endfor %}
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-        <div class="text-muted small mt-2">Baris = kelas aktual, kolom = kelas prediksi. Sel hijau adalah prediksi benar.</div>
-        {% endif %}
-      </div>
-    </div>
+<!-- Support & Confusion Matrix -->
+<div class="card mb-4">
+  <div class="card-header">
+    Distribusi Data (Support)
   </div>
-
-  <div class="col-lg-5">
-    <div class="card h-100">
-      <div class="card-header">
-        Distribusi Data (Support)
+  <div class="card-body">
+    {% if metrics.task_type == 'binary' %}
+    {% set support_total = metrics.support.total if metrics.support.total is defined else (metrics.support.negative + metrics.support.positive) %}
+    {% set predicted_total = metrics.predicted.total if metrics.predicted.total is defined else (metrics.predicted.negative + metrics.predicted.positive) %}
+    {% set correct_count = metrics.correct if metrics.correct is defined else (metrics.confusion_matrix[0][0] + metrics.confusion_matrix[1][1]) %}
+    {% set incorrect_count = support_total - correct_count %}
+    <div class="row g-2 mb-3">
+      <div class="col-6">
+        <div class="p-2 border rounded bg-light h-100">
+          <div class="small text-muted">Total Baris</div>
+          <div class="fs-5 fw-bold">{{ support_total }}</div>
+        </div>
       </div>
-      <div class="card-body">
-        {% if metrics.task_type == 'binary' %}
-        <div class="mb-3">
-          <span class="small fw-bold text-secondary d-block mb-2">Ground Truth (Sebenarnya):</span>
-          <div class="d-flex justify-content-between p-2 border rounded bg-light mb-2">
-            <span>Aktual Negatif (0):</span>
-            <strong>{{ metrics.support.negative }} baris</strong>
-          </div>
-          <div class="d-flex justify-content-between p-2 border rounded bg-light">
-            <span>Aktual Positif (1):</span>
-            <strong class="text-primary">{{ metrics.support.positive }} baris</strong>
-          </div>
+      <div class="col-6">
+        <div class="p-2 border rounded bg-light h-100">
+          <div class="small text-muted">Benar / Salah</div>
+          <div class="fs-6 fw-bold"><span class="text-success">{{ correct_count }}</span> / <span class="text-danger">{{ incorrect_count }}</span></div>
         </div>
-        <div>
-          <span class="small fw-bold text-secondary d-block mb-2">Predicted (Hasil Tebakan):</span>
-          <div class="d-flex justify-content-between p-2 border rounded bg-light mb-2">
-            <span>Ditebak Negatif (0):</span>
-            <strong>{{ metrics.predicted.negative }} baris</strong>
-          </div>
-          <div class="d-flex justify-content-between p-2 border rounded bg-light">
-            <span>Ditebak Positif (1):</span>
-            <strong class="text-primary">{{ metrics.predicted.positive }} baris</strong>
-          </div>
-        </div>
-        {% else %}
-        <div class="table-responsive">
-          <table class="table table-sm mb-0">
-            <thead>
-              <tr><th>Kelas</th><th class="text-end">Aktual</th><th class="text-end">Prediksi</th></tr>
-            </thead>
-            <tbody>
-              {% for item in metrics.per_class %}
-              <tr>
-                <td>{{ item.label }}</td>
-                <td class="text-end">{{ item.support }}</td>
-                <td class="text-end">{{ item.predicted }}</td>
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-        {% endif %}
       </div>
     </div>
+    <div class="mb-3">
+      <span class="small fw-bold text-secondary d-block mb-2">Ground Truth (Sebenarnya):</span>
+      <div class="d-flex justify-content-between align-items-center p-2 border rounded bg-light mb-2">
+        <span>Aktual Negatif (0)</span>
+        <span><strong>{{ metrics.support.negative }} baris</strong> <span class="text-muted small">({{ '%.1f'|format(metrics.support.negative / support_total * 100) }}%)</span></span>
+      </div>
+      <div class="d-flex justify-content-between align-items-center p-2 border rounded bg-light">
+        <span>Aktual Positif (1)</span>
+        <span><strong class="text-primary">{{ metrics.support.positive }} baris</strong> <span class="text-muted small">({{ '%.1f'|format(metrics.support.positive / support_total * 100) }}%)</span></span>
+      </div>
+    </div>
+    <div>
+      <span class="small fw-bold text-secondary d-block mb-2">Predicted (Hasil Tebakan):</span>
+      <div class="d-flex justify-content-between align-items-center p-2 border rounded bg-light mb-2">
+        <span>Ditebak Negatif (0)</span>
+        <span><strong>{{ metrics.predicted.negative }} baris</strong> <span class="text-muted small">({{ '%.1f'|format(metrics.predicted.negative / predicted_total * 100) }}%)</span></span>
+      </div>
+      <div class="d-flex justify-content-between align-items-center p-2 border rounded bg-light">
+        <span>Ditebak Positif (1)</span>
+        <span><strong class="text-primary">{{ metrics.predicted.positive }} baris</strong> <span class="text-muted small">({{ '%.1f'|format(metrics.predicted.positive / predicted_total * 100) }}%)</span></span>
+      </div>
+    </div>
+    <div class="text-muted small mt-2">Support = jumlah baris aktual per kelas pada data yang dievaluasi.</div>
+    {% else %}
+    {% set ns = namespace(correct=0) %}
+    {% for row in metrics.confusion_matrix %}
+      {% set ns.correct = ns.correct + row[loop.index0] %}
+    {% endfor %}
+    {% set correct_count = metrics.correct if metrics.correct is defined else ns.correct %}
+    <div class="d-flex flex-wrap gap-2 mb-3">
+      <span class="badge bg-light text-dark border">Total aktual: {{ metrics.support.total }}</span>
+      <span class="badge bg-light text-dark border">Total prediksi: {{ metrics.predicted.total }}</span>
+      <span class="badge bg-success-subtle text-success border border-success">Benar: {{ correct_count }}</span>
+      <span class="badge bg-danger-subtle text-danger border border-danger">Salah: {{ metrics.support.total - correct_count }}</span>
+      <span class="badge bg-primary-subtle text-primary border border-primary-subtle">Kelas: {{ metrics.per_class|length }}</span>
+    </div>
+    <div class="table-responsive">
+      <table class="table table-sm mb-0 align-middle">
+        <thead>
+          <tr>
+            <th>Kelas</th>
+            <th class="text-end">Aktual</th>
+            <th class="text-end">% Aktual</th>
+            <th class="text-end">Prediksi</th>
+            <th class="text-end">% Prediksi</th>
+            <th class="text-end">Tepat</th>
+            <th class="text-end">Akurasi Kelas</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in metrics.per_class %}
+          {% set row_index = loop.index0 %}
+          {% set class_correct = item.get('correct') if item.get('correct') is not none else metrics.confusion_matrix[row_index][row_index] %}
+          <tr>
+            <td class="fw-semibold">{{ item.label }}</td>
+            <td class="text-end">{{ item.support }}</td>
+            <td class="text-end">{{ '%.1f'|format(item.support / metrics.support.total * 100) }}%</td>
+            <td class="text-end">{{ item.predicted }}</td>
+            <td class="text-end">{{ '%.1f'|format(item.predicted / metrics.predicted.total * 100) }}%</td>
+            <td class="text-end">{{ class_correct }}</td>
+            <td class="text-end">{{ '%.1f'|format(class_correct / item.support * 100 if item.support else 0) }}%</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot>
+          <tr class="table-light fw-semibold">
+            <td>Total</td>
+            <td class="text-end">{{ metrics.support.total }}</td>
+            <td class="text-end">100.0%</td>
+            <td class="text-end">{{ metrics.predicted.total }}</td>
+            <td class="text-end">100.0%</td>
+            <td class="text-end">{{ correct_count }}</td>
+            <td class="text-end">{{ '%.1f'|format(correct_count / metrics.support.total * 100) }}%</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+    <div class="text-muted small mt-2">Support = jumlah baris aktual per kelas. &ldquo;Tepat&rdquo; = prediksi benar untuk kelas tersebut.</div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card mb-4">
+  <div class="card-header">
+    Confusion Matrix{% if metrics.task_type == 'binary' %} (Threshold: {{ '%.2f'|format(metrics.threshold) }}){% endif %}
+  </div>
+  <div class="card-body">
+    {% if metrics.task_type == 'binary' %}
+    <div class="matrix-grid">
+      <div class="matrix-cell cell-tn">
+        <div class="matrix-num">{{ metrics.confusion_matrix[0][0] }}</div>
+        <div class="matrix-lbl">True Negative (TN)</div>
+        <div class="text-muted small" style="font-size: 0.7rem;">Aktual: 0 &bull; Prediksi: 0</div>
+      </div>
+      <div class="matrix-cell cell-error">
+        <div class="matrix-num">{{ metrics.confusion_matrix[0][1] }}</div>
+        <div class="matrix-lbl">False Positive (FP)</div>
+        <div class="text-muted small" style="font-size: 0.7rem;">Aktual: 0 &bull; Prediksi: 1</div>
+      </div>
+      <div class="matrix-cell cell-error">
+        <div class="matrix-num">{{ metrics.confusion_matrix[1][0] }}</div>
+        <div class="matrix-lbl">False Negative (FN)</div>
+        <div class="text-muted small" style="font-size: 0.7rem;">Aktual: 1 &bull; Prediksi: 0</div>
+      </div>
+      <div class="matrix-cell cell-tp">
+        <div class="matrix-num">{{ metrics.confusion_matrix[1][1] }}</div>
+        <div class="matrix-lbl">True Positive (TP)</div>
+        <div class="text-muted small" style="font-size: 0.7rem;">Aktual: 1 &bull; Prediksi: 1</div>
+      </div>
+    </div>
+    <div class="d-flex justify-content-center gap-3 mt-3 text-muted small">
+      <span><span class="badge bg-success-subtle text-success border border-success me-1">Hijau</span> Tebakan Benar</span>
+      <span><span class="badge bg-danger-subtle text-danger border border-danger me-1">Merah</span> Salah Tebak</span>
+    </div>
+    {% else %}
+    <div class="table-responsive">
+      <table class="table table-bordered table-sm text-center mb-0">
+        <thead>
+          <tr>
+            <th class="text-start">Aktual \ Prediksi</th>
+            {% for label in metrics.classes %}<th>{{ label }}</th>{% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in metrics.confusion_matrix %}
+          {% set row_index = loop.index0 %}
+          <tr>
+            <th class="text-start">{{ metrics.classes[row_index] }}</th>
+            {% for value in row %}
+            <td class="{% if loop.index0 == row_index %}table-success fw-bold{% endif %}">{{ value }}</td>
+            {% endfor %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="text-muted small mt-2">Baris = kelas aktual, kolom = kelas prediksi. Sel hijau adalah prediksi benar.</div>
+    {% endif %}
   </div>
 </div>
 

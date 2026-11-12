@@ -34,6 +34,8 @@ def compute_metrics(
     both_classes = len(np.unique(y_true)) == 2
 
     matrix = confusion_matrix(y_true, y_pred, labels=[0, 1])
+    total = int(len(y_true))
+    correct = int(matrix[0][0] + matrix[1][1])
     metrics: dict[str, Any] = {
         "task_type": "binary",
         "threshold": round(float(threshold), 4),
@@ -45,13 +47,17 @@ def compute_metrics(
         "log_loss": None,
         "brier": None,
         "confusion_matrix": matrix.tolist(),
+        "correct": correct,
+        "incorrect": total - correct,
         "support": {
             "negative": int((y_true == 0).sum()),
             "positive": int((y_true == 1).sum()),
+            "total": total,
         },
         "predicted": {
             "negative": int((y_pred == 0).sum()),
             "positive": int((y_pred == 1).sum()),
+            "total": int(len(y_pred)),
         },
     }
     if both_classes:
@@ -92,9 +98,11 @@ def compute_multiclass_metrics(
                 "f1": round(float(f1), 4),
                 "support": support,
                 "predicted": predicted,
+                "correct": true_positive,
             }
         )
 
+    correct = int(sum(matrix[index][index] for index in labels))
     metrics: dict[str, Any] = {
         "task_type": "multiclass",
         "classes": [str(label) for label in classes],
@@ -130,6 +138,8 @@ def compute_multiclass_metrics(
         "log_loss": None,
         "brier": None,
         "confusion_matrix": matrix.tolist(),
+        "correct": correct,
+        "incorrect": int(len(y_true)) - correct,
         "support": {
             "total": int(len(y_true)),
             "per_class": {str(label): int((y_true == index).sum()) for index, label in enumerate(classes)},
