@@ -19,12 +19,12 @@ from sklearn.model_selection import (
     train_test_split,
 )
 
-from dc.evaluate import compute_metrics
+from dc.evaluate import compute_metrics, compute_multiclass_metrics
 from dc.io import feature_value_options, get_feature_columns
 from dc.models import MODEL_LABELS, build_candidate_models, search_spaces
 from dc.preprocess import build_pipeline
 
-BUNDLE_VERSION = 1
+BUNDLE_VERSION = 2
 ProgressCallback = Callable[[str, float], None]
 
 
@@ -56,24 +56,50 @@ class TrainResult:
     warnings: list[str] = field(default_factory=list)
 
 
+def resolve_target_classes(
+    series: pd.Series,
+    positive_label: Any | None = None,
+) -> tuple[list[Any], Any | None]:
+    """Return the ordered target classes and, for binary targets, the positive class."""
+    values = [_native_label(value) for value in pd.unique(series.dropna())]
+    if len(values) < 2:
+        raise ValueError(
+            f"Target must have at least 2 classes for classification; found {len(values)}."
+        )
+
+    if len(values) == 2:
+        if positive_label is None:
+            if any(isinstance(value, (bool, np.bool_)) for value in values):
+                positive = next(value for value in values if bool(value) is True)
+            else:
+                try:
+                    positive = sorted(values)[-1]
+                except TypeError:
+                    positive = values[-1]
+        else:
+            positive = _match_label(values, positive_label)
+        negative = next(value for value in values if value != positive)
+        return [negative, positive], positive
+
+    if positive_label is not None:
+        raise ValueError(
+            "A positive class can only be selected for binary targets; "
+            f"this target has {len(values)} classes."
+        )
+    try:
+        classes = sorted(values)
+    except TypeError:
+        classes = values
+    return classes, None
+
+
 def resolve_positive_label(series: pd.Series, positive_label: Any | None = None) -> tuple[Any, Any]:
-    classes = [_native_label(value) for value in pd.unique(series.dropna())]
+    classes, positive = resolve_target_classes(series, positive_label)
     if len(classes) != 2:
         raise ValueError(
             f"Target must have exactly 2 classes for binary classification; found {len(classes)}."
         )
-    if positive_label is None:
-        if any(isinstance(value, (bool, np.bool_)) for value in classes):
-            positive = next(value for value in classes if bool(value) is True)
-        else:
-            try:
-                positive = sorted(classes)[-1]
-            except TypeError:
-                positive = classes[-1]
-    else:
-        positive = _match_label(classes, positive_label)
-    negative = next(value for value in classes if value != positive)
-    return negative, positive
+    return classes[0], positive
 
 
 def _native_label(value: Any) -> Any:
@@ -91,6 +117,73 @@ def _match_label(classes: list[Any], requested: Any) -> Any:
     raise ValueError(f"Positive label '{requested}' is not one of the target classes: {options}")
 
 
+def encode_target_values(series: pd.Series, classes: list[Any]) -> np.ndarray:
+    mapping = {label: index for index, label in enumerate(classes)}
+
+    def encode(value: Any) -> int:
+        if value in mapping:
+            return mapping[value]
+        for label, index in mapping.items():
+            if str(label) == str(value):
+                return index
+        raise ValueError(f"Target value '{value}' is not one of the resolved classes.")
+
+    return series.map(encode).to_numpy(dtype=int)
+
+
+def _probabilities_in_class_order(
+    estimator,
+    frame: pd.DataFrame,
+    class_count: int,
+) -> np.ndarray:
+    probabilities = estimator.predict_proba(frame)
+    pipeline_classes = list(estimator.classes_)
+    column_order = [pipeline_classes.index(index) for index in range(class_count)]
+    return probabilities[:, column_order]
+
+
+def _test_scores(
+    estimator,
+    frame: pd.DataFrame,
+    y_true: np.ndarray,
+    class_count: int,
+    classes: list[Any],
+) -> dict[str, Any]:
+    empty = {
+        "test_accuracy": None,
+        "test_precision": None,
+        "test_recall": None,
+        "test_f1": None,
+        "test_roc_auc": None,
+    }
+    try:
+        probabilities = _probabilities_in_class_order(estimator, frame, class_count)
+        if class_count == 2:
+            metrics = compute_metrics(y_true, probabilities[:, 1], threshold=0.5)
+        else:
+            metrics = compute_multiclass_metrics(y_true, probabilities, classes)
+    except Exception:
+        return empty
+    return {
+        "test_accuracy": metrics["accuracy"],
+        "test_precision": metrics["precision"],
+        "test_recall": metrics["recall"],
+        "test_f1": metrics["f1"],
+        "test_roc_auc": metrics["roc_auc"],
+    }
+
+
+def _resolve_scoring(scoring: str, class_count: int) -> str:
+    if class_count <= 2:
+        return scoring
+    return {
+        "roc_auc": "roc_auc_ovr",
+        "precision": "precision_macro",
+        "recall": "recall_macro",
+        "f1": "f1_macro",
+    }.get(scoring, scoring)
+
+
 def train_model(
     frame: pd.DataFrame,
     config: TrainConfig,
@@ -102,11 +195,7 @@ def train_model(
 
     clean = frame.dropna(subset=[config.target]).copy()
     if clean[config.target].dtype == object or ptypes.is_string_dtype(clean[config.target]):
-        stripped = clean[config.target].astype(str).str.strip()
-        if stripped.nunique() == 2:
-            clean[config.target] = stripped
-        elif stripped.str.upper().nunique() == 2:
-            clean[config.target] = stripped.str.upper()
+        clean[config.target] = clean[config.target].astype(str).str.strip()
 
     dropped = len(frame) - len(clean)
     if dropped:
@@ -114,12 +203,14 @@ def train_model(
     if len(clean) < 10:
         raise ValueError("At least 10 labeled rows are required to train a model.")
 
-    negative, positive = resolve_positive_label(clean[config.target], config.positive_label)
-    y = (clean[config.target] == positive).astype(int).to_numpy()
+    classes, positive = resolve_target_classes(clean[config.target], config.positive_label)
+    class_count = len(classes)
+    y = encode_target_values(clean[config.target], classes)
     features = get_feature_columns(clean, config.target, config.exclude)
     X = clean[features]
 
-    minority = int(min((y == 0).sum(), (y == 1).sum()))
+    class_sizes = np.bincount(y, minlength=class_count)
+    minority = int(class_sizes.min())
     if minority < 4:
         raise ValueError("Each class needs at least 4 labeled rows to train and evaluate.")
     if minority / len(y) < 0.2:
@@ -134,12 +225,17 @@ def train_model(
     test_rows = int(np.ceil(len(clean) * config.test_size))
     if test_rows >= len(clean) or test_rows < 2:
         raise ValueError("test_size must leave both training and test rows in every class.")
+    if test_rows < class_count:
+        raise ValueError(
+            "test_size must leave at least one test row per class "
+            f"({class_count} classes)."
+        )
 
     test_size = float(test_rows) / len(clean)
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=test_size, stratify=y, random_state=config.seed
     )
-    train_minority = int(min((y_train == 0).sum(), (y_train == 1).sum()))
+    train_minority = int(np.bincount(y_train, minlength=class_count).min())
     train_folds = int(min(folds, train_minority))
     if train_folds < 2:
         raise ValueError("Not enough training samples per class for cross-validation.")
@@ -153,6 +249,7 @@ def train_model(
             f"Unknown model(s): {', '.join(unknown)}. Available: {', '.join(candidates)}"
         )
 
+    scoring = _resolve_scoring(config.scoring, class_count)
     spaces = search_spaces()
     leaderboard: list[dict[str, Any]] = []
     best_name: str | None = None
@@ -169,7 +266,7 @@ def train_model(
                     pipeline,
                     spaces[name],
                     n_iter=min(config.n_iter, _space_size(spaces[name])),
-                    scoring=config.scoring,
+                    scoring=scoring,
                     cv=splitter,
                     random_state=config.seed,
                     error_score="raise",
@@ -184,7 +281,7 @@ def train_model(
                     X_train,
                     y_train,
                     cv=splitter,
-                    scoring=config.scoring,
+                    scoring=scoring,
                     error_score="raise",
                 )
                 score = float(np.mean(scores))
@@ -209,6 +306,7 @@ def train_model(
                 "score": round(score, 4),
                 "std": round(std, 4),
                 "error": None,
+                **_test_scores(fitted, X_test, y_test, class_count, classes),
             }
         )
         if score > best_score:
@@ -225,27 +323,29 @@ def train_model(
     if progress:
         progress("Evaluating on the held-out test set...", 0.95)
 
-    probabilities = best_estimator.predict_proba(X_test)
-    classes = list(best_estimator.classes_)
-    positive_index = classes.index(1)
-    y_proba = probabilities[:, positive_index]
-    test_metrics = compute_metrics(y_test, y_proba, threshold=0.5)
+    probabilities = _probabilities_in_class_order(best_estimator, X_test, class_count)
+    if class_count == 2:
+        y_proba = probabilities[:, 1]
+        test_metrics = compute_metrics(y_test, y_proba, threshold=0.5)
+    else:
+        y_proba = probabilities
+        test_metrics = compute_multiclass_metrics(y_test, y_proba, classes)
 
     metadata = {
         "bundle_version": BUNDLE_VERSION,
         "created_at": datetime.now(timezone.utc).isoformat(),
+        "task_type": "binary" if class_count == 2 else "multiclass",
         "target": config.target,
-        "positive_label": _jsonable(positive),
-        "negative_label": _jsonable(negative),
+        "classes": [_jsonable(value) for value in classes],
+        "class_count": class_count,
         "feature_columns": features,
         "feature_dtypes": {str(column): str(clean[column].dtype) for column in features},
         "feature_values": feature_value_options(clean, features),
         "model_name": best_name,
         "model_label": MODEL_LABELS.get(best_name, best_name),
-        "scoring": config.scoring,
+        "scoring": scoring,
         "cv_folds": train_folds,
         "class_weight": config.class_weight,
-        "threshold": 0.5,
         "seed": config.seed,
         "rows": int(len(clean)),
         "test_size": round(test_size, 4),
@@ -259,6 +359,10 @@ def train_model(
             "numpy": np.__version__,
         },
     }
+    if class_count == 2:
+        metadata["positive_label"] = _jsonable(classes[1])
+        metadata["negative_label"] = _jsonable(classes[0])
+        metadata["threshold"] = 0.5
     leaderboard.sort(key=lambda row: (row["score"] is None, -(row["score"] or 0)))
 
     if progress:

@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import pandas as pd
 import pytest
 
@@ -255,7 +258,7 @@ def test_train_page_rejects_non_binary_target(tmp_path):
     )
     assert response.status_code == 200
     html = response.get_data(as_text=True)
-    assert "binary classification needs exactly 2" in html
+    assert "classification needs between 2 and 20" in html
     assert "approved" in html
 
 
@@ -355,6 +358,41 @@ def test_predict_page_manual_submission_with_dropdown_values(storage_dirs, binar
     assert "Probabilitas" in html
 
 
+def test_predict_page_shows_recent_manual_predictions(storage_dirs, binary_frame, tmp_path):
+    result = train_model(
+        binary_frame,
+        TrainConfig(target="approved", models=["logistic"], cv_folds=3, seed=7),
+    )
+    model_path = save_result(result, storage_dirs["models"] / "model.joblib")
+    data_path = tmp_path / "data.csv"
+    binary_frame.to_csv(data_path, index=False)
+
+    client = app.test_client()
+    with client.session_transaction() as session:
+        session["current_model_path"] = str(model_path)
+        session["current_file"] = str(data_path)
+
+    payload = {
+        "mode": "manual",
+        "age": "41",
+        "income": "6400",
+        "debt_ratio": "0.25",
+        "employment_years": "9",
+        "has_default": "True",
+        "region": "north",
+    }
+    assert client.post("/predict", data=payload).status_code == 200
+    payload["age"] = "52"
+    response = client.post("/predict", data=payload)
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+
+    assert "Riwayat Prediksi Manual" in html
+    assert "2 terakhir" in html
+    assert ">41<" in html
+    assert ">52<" in html
+
+
 def test_train_status_does_not_store_pipeline_in_session(storage_dirs, binary_frame, tmp_path):
     data_path = tmp_path / "data.csv"
     binary_frame.to_csv(data_path, index=False)
@@ -399,11 +437,139 @@ def test_evaluate_and_predict_reload_model_from_path(storage_dirs, binary_frame,
         session["current_model_path"] = str(model_path)
         session["current_file"] = str(data_path)
 
-    assert client.get("/evaluate").status_code == 200
+    response = client.get("/evaluate")
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert "Detail Akurasi per Algoritma" in html
+    assert "Akurasi Uji" in html
+    assert "Data Uji (Test Set)" in html
+    assert "Distribusi Data (Support)" in html
+    assert "Total Baris" in html
     assert client.get("/predict").status_code == 200
     assert client.get("/model").status_code == 200
     with client.session_transaction() as session:
         assert "current_bundle" not in session
+
+
+def _train_and_save(storage_dirs, frame):
+    result = train_model(
+        frame,
+        TrainConfig(target="approved", models=["logistic"], cv_folds=3, seed=7),
+    )
+    return save_result(result, storage_dirs["models"] / "model.joblib")
+
+
+def test_predict_batch_downloads_csv(storage_dirs, binary_frame, tmp_path):
+    model_path = _train_and_save(storage_dirs, binary_frame)
+    input_path = tmp_path / "batch.csv"
+    binary_frame.drop(columns=["approved"]).to_csv(input_path, index=False)
+
+    client = app.test_client()
+    with client.session_transaction() as session:
+        session["current_model_path"] = str(model_path)
+
+    with input_path.open("rb") as handle:
+        response = client.post(
+            "/predict/batch",
+            data={"file": (handle, "batch.csv")},
+            content_type="multipart/form-data",
+        )
+
+    assert response.status_code == 200
+    assert "attachment" in response.headers["Content-Disposition"]
+    outputs = list(storage_dirs["reports"].glob("predictions_*.csv"))
+    assert len(outputs) == 1
+    out = pd.read_csv(outputs[0])
+    assert "prediction" in out.columns
+    assert len(out) == len(binary_frame)
+
+    conn = web_app.get_db()
+    try:
+        count = int(conn.execute("SELECT COUNT(*) FROM predictions").fetchone()[0])
+    finally:
+        conn.close()
+    assert count == 1
+
+
+def test_predict_batch_with_relative_reports_dir(
+    storage_dirs, binary_frame, tmp_path, monkeypatch
+):
+    model_path = _train_and_save(storage_dirs, binary_frame)
+    input_path = tmp_path / "batch.csv"
+    binary_frame.drop(columns=["approved"]).to_csv(input_path, index=False)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(web_app, "REPORTS_DIR", Path("reports"))
+
+    client = app.test_client()
+    with client.session_transaction() as session:
+        session["current_model_path"] = str(model_path)
+
+    with input_path.open("rb") as handle:
+        response = client.post(
+            "/predict/batch",
+            data={"file": (handle, "batch.csv")},
+            content_type="multipart/form-data",
+        )
+
+    assert response.status_code == 200
+    assert list((tmp_path / "reports").glob("predictions_*.csv"))
+
+
+def test_predict_batch_handles_unreadable_file(storage_dirs, binary_frame, tmp_path):
+    model_path = _train_and_save(storage_dirs, binary_frame)
+    input_path = tmp_path / "empty.csv"
+    input_path.write_text("", encoding="utf-8")
+
+    client = app.test_client()
+    with client.session_transaction() as session:
+        session["current_model_path"] = str(model_path)
+
+    with input_path.open("rb") as handle:
+        response = client.post(
+            "/predict/batch",
+            data={"file": (handle, "empty.csv")},
+            content_type="multipart/form-data",
+        )
+
+    assert response.status_code == 302
+    assert not list(storage_dirs["reports"].glob("predictions_*.csv"))
+    conn = web_app.get_db()
+    try:
+        count = int(conn.execute("SELECT COUNT(*) FROM predictions").fetchone()[0])
+    finally:
+        conn.close()
+    assert count == 0
+
+
+def test_model_page_shows_saved_model_context(storage_dirs, binary_frame):
+    result = train_model(
+        binary_frame,
+        TrainConfig(target="approved", models=["logistic"], cv_folds=3, seed=7),
+    )
+    model_path = save_result(result, storage_dirs["models"] / "model.joblib")
+
+    client = app.test_client()
+    response = client.get("/model")
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert "Target &amp; Tugas" in html
+    assert "approved" in html
+    assert "binary" in html
+    assert "Logistic regression" in html
+    assert "F1:" in html
+    assert "Detail" in html
+    assert "Metrik Uji" in html
+    assert "model.joblib" in html
+
+    sidecar = model_path.with_suffix(".json")
+    metadata = json.loads(sidecar.read_text(encoding="utf-8"))
+    metadata.pop("task_type", None)
+    sidecar.write_text(json.dumps(metadata), encoding="utf-8")
+
+    response = client.get("/model")
+    assert response.status_code == 200
+    assert "binary" in response.get_data(as_text=True)
 
 
 def test_upload_keeps_session_cookie_small(storage_dirs, tmp_path):
@@ -425,3 +591,72 @@ def test_upload_keeps_session_cookie_small(storage_dirs, tmp_path):
         assert "current_shape" not in session
         assert session["current_file"]
 
+
+
+def test_multiclass_train_evaluate_and_predict(storage_dirs, multiclass_frame, tmp_path):
+    data_path = tmp_path / "data.csv"
+    multiclass_frame.to_csv(data_path, index=False)
+
+    client = app.test_client()
+    with client.session_transaction() as session:
+        session["current_file"] = str(data_path)
+
+    response = client.get("/train")
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert "risk" in html
+    assert "3 kelas" in html
+
+    response = client.post(
+        "/train",
+        data={
+            "target": "risk",
+            "test_size": "0.2",
+            "cv_folds": "3",
+            "seed": "42",
+            "scoring": "f1_macro",
+            "models": ["logistic"],
+        },
+    )
+    assert response.status_code == 200
+    assert "Training..." in response.get_data(as_text=True)
+
+    result = train_model(
+        multiclass_frame,
+        TrainConfig(target="risk", models=["logistic"], cv_folds=3, seed=7),
+    )
+    model_path = save_result(result, storage_dirs["models"] / "multiclass.joblib")
+    with client.session_transaction() as session:
+        session["current_model_path"] = str(model_path)
+        session["current_file"] = str(data_path)
+
+    response = client.post("/evaluate", data={"evaluate_on_current": "on"})
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert "Metrik Per Kelas" in html
+    assert "Multikelas" in html
+    assert "Detail Akurasi per Algoritma" in html
+    assert "Dataset Aktif Saat Ini" in html
+    assert "Total aktual" in html
+    assert "% Aktual" in html
+    assert "Akurasi Kelas" in html
+
+    response = client.get("/predict")
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert "argmax" in html or "Kelas:" in html
+
+    response = client.post(
+        "/predict",
+        data={
+            "mode": "manual",
+            "age": "41",
+            "income": "6400",
+            "debt_ratio": "0.25",
+            "region": "north",
+        },
+    )
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert "Hasil Prediksi" in html
+    assert "terpilih" in html

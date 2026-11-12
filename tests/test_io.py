@@ -5,6 +5,7 @@ from dc.io import (
     DataLoadError,
     DataSaveError,
     find_binary_targets,
+    find_classification_targets,
     get_feature_columns,
     infer_schema,
     load_dataframe,
@@ -38,6 +39,8 @@ def test_infer_schema_marks_target(binary_frame):
     target = next(item for item in schema if item["name"] == "approved")
     assert target["is_target"] is True
     assert "approved" in find_binary_targets(binary_frame)
+    assert "region" in find_classification_targets(binary_frame)
+    assert "region" not in find_binary_targets(binary_frame)
 
 
 def test_unique_values_sorted(binary_frame):

@@ -7,7 +7,7 @@ from typing import Any
 import pandas as pd
 from pandas.api import types as ptypes
 
-from dc.io import find_binary_targets, infer_schema
+from dc.io import find_binary_targets, find_classification_targets, infer_schema
 
 
 def class_balance(series: pd.Series) -> dict[str, Any]:
@@ -33,6 +33,7 @@ def inspect_dataframe(frame: pd.DataFrame, target: str | None = None) -> dict[st
         "duplicate_rows": int(frame.duplicated().sum()),
         "total_missing": int(frame.isna().sum().sum()),
         "binary_target_candidates": find_binary_targets(frame),
+        "classification_target_candidates": find_classification_targets(frame),
         "schema": infer_schema(frame, target),
     }
     numeric = frame.select_dtypes(include=["number"])
@@ -66,9 +67,12 @@ def format_report(info: dict[str, Any]) -> str:
         f"- Duplicate rows: {info['duplicate_rows']}",
         f"- Missing cells: {info['total_missing']}",
     ]
-    candidates = info.get("binary_target_candidates", [])
+    candidates = info.get("classification_target_candidates", [])
     if candidates:
-        lines.append(f"- Binary target candidates: {', '.join(candidates)}")
+        lines.append(f"- Classification target candidates: {', '.join(candidates)}")
+    binary_candidates = info.get("binary_target_candidates", [])
+    if binary_candidates:
+        lines.append(f"- Binary target candidates: {', '.join(binary_candidates)}")
     if "target" in info:
         balance = info["class_balance"]
         lines.extend(["", f"## Target: {info['target']}", ""])

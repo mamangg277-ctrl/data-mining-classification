@@ -29,20 +29,43 @@ from flask import (
 from werkzeug.utils import secure_filename
 
 from dc.eda import inspect_dataframe, save_report
-from dc.evaluate import compute_metrics
-from dc.io import feature_value_options, find_binary_targets, load_dataframe, save_dataframe
+from dc.evaluate import compute_metrics, compute_multiclass_metrics
+from dc.io import (
+    feature_value_options,
+    find_binary_targets,
+    find_classification_targets,
+    load_dataframe,
+    save_dataframe,
+    target_class_count,
+)
 from dc.models import MODEL_LABELS
-from dc.predict import predict_frame, predict_probabilities, predict_record
-from dc.train import TrainConfig, TrainResult, load_bundle, save_result, train_model
+from dc.predict import (
+    predict_frame,
+    predict_proba_matrix,
+    predict_probabilities,
+    predict_record,
+)
+from dc.train import (
+    TrainConfig,
+    TrainResult,
+    encode_target_values,
+    load_bundle,
+    save_result,
+    train_model,
+)
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 app.secret_key = os.environ.get("DC_SECRET_KEY") or "dataclassifier-dev-key-change-in-production"
 app.config["MAX_CONTENT_LENGTH"] = 256 * 1024 * 1024  # 256MB
 
-UPLOAD_DIR = Path(os.environ.get("DC_UPLOAD_DIR", Path("data") / "uploads"))
-MODELS_DIR = Path(os.environ.get("DC_MODELS_DIR", "models"))
-REPORTS_DIR = Path(os.environ.get("DC_REPORTS_DIR", "reports"))
-DB_PATH = Path(os.environ.get("DC_DB_PATH", Path(".web_data") / "history.db"))
+def _workspace_path(value: str | Path) -> Path:
+    return Path(value).expanduser().resolve()
+
+
+UPLOAD_DIR = _workspace_path(os.environ.get("DC_UPLOAD_DIR", Path("data") / "uploads"))
+MODELS_DIR = _workspace_path(os.environ.get("DC_MODELS_DIR", "models"))
+REPORTS_DIR = _workspace_path(os.environ.get("DC_REPORTS_DIR", "reports"))
+DB_PATH = _workspace_path(os.environ.get("DC_DB_PATH", Path(".web_data") / "history.db"))
 for _directory in (UPLOAD_DIR, MODELS_DIR, REPORTS_DIR, DB_PATH.parent):
     _directory.mkdir(parents=True, exist_ok=True)
 
@@ -57,20 +80,31 @@ training_queues: dict[str, queue.Queue] = {}
 
 
 def choose_default_target(frame: pd.DataFrame, preferred: str | None = None) -> str | None:
-    """Pick a sensible binary target for the training form."""
+    """Pick a sensible classification target for the training form."""
     columns = [str(column) for column in frame.columns]
     if not columns:
         return None
-    binary = set(find_binary_targets(frame))
-    if preferred is not None and str(preferred) in binary:
+    targets = find_classification_targets(frame)
+    target_set = set(targets)
+    if preferred is not None and str(preferred) in target_set:
         return str(preferred)
     last = columns[-1]
-    if last in binary:
+    if last in target_set:
         return last
+    binary = set(find_binary_targets(frame))
     binary_columns = [column for column in columns if column in binary]
     if binary_columns:
         return binary_columns[-1]
+    if targets:
+        return targets[-1]
     return last
+
+
+def _target_options(frame: pd.DataFrame) -> list[dict[str, Any]]:
+    return [
+        {"name": name, "classes": target_class_count(frame[name])}
+        for name in find_classification_targets(frame)
+    ]
 
 
 def get_db():
@@ -115,6 +149,17 @@ def init_db():
             created_at TEXT NOT NULL,
             result_json TEXT,
             FOREIGN KEY(run_id) REFERENCES runs(id)
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS manual_predictions (
+            id TEXT PRIMARY KEY,
+            model_path TEXT,
+            inputs_json TEXT,
+            result_json TEXT,
+            created_at TEXT NOT NULL
         )
         """
     )
@@ -426,6 +471,10 @@ def delete_model(name: str | None) -> bool:
             if output_path is not None:
                 _remove_file(output_path)
         cur.execute(f"DELETE FROM predictions WHERE model_path IN ({placeholders})", variants)
+        cur.execute(
+            f"DELETE FROM manual_predictions WHERE model_path IN ({placeholders})",
+            variants,
+        )
         cur.execute(f"DELETE FROM runs WHERE model_path IN ({placeholders})", variants)
         conn.commit()
     finally:
@@ -488,6 +537,7 @@ def clear_models() -> int:
             if output_path is not None:
                 _remove_file(output_path)
         cur.execute("DELETE FROM predictions")
+        cur.execute("DELETE FROM manual_predictions")
         cur.execute("DELETE FROM runs")
         conn.commit()
     finally:
@@ -524,6 +574,7 @@ def clear_history() -> None:
         cur = conn.cursor()
         cur.execute("DELETE FROM runs")
         cur.execute("DELETE FROM predictions")
+        cur.execute("DELETE FROM manual_predictions")
         cur.execute("DELETE FROM inspections")
         conn.commit()
         try:
@@ -560,7 +611,7 @@ def data_page():
             session["current_columns"] = list(frame.columns)
             if "target" not in session or session.get("target") not in frame.columns:
                 session["target"] = choose_default_target(frame)
-            binary_candidates = find_binary_targets(frame)
+            target_options = _target_options(frame)
             preview = frame.head(100).to_dict(orient="records")
             clean_filename = path.name.split("_", 2)[-1] if "_" in path.name else path.name
             return render_template(
@@ -570,7 +621,7 @@ def data_page():
                 shape=frame.shape,
                 columns=list(frame.columns),
                 preview=preview,
-                binary_candidates=binary_candidates,
+                target_options=target_options,
             )
         except Exception:
             pass
@@ -600,7 +651,7 @@ def upload():
     except Exception as e:
         flash(f"Failed to load file: {e}", "error")
         return redirect(url_for("data_page"))
-    binary_candidates = find_binary_targets(frame)
+    target_options = _target_options(frame)
     session["current_file"] = str(path)
     session["current_columns"] = list(frame.columns)
     session["target"] = choose_default_target(frame)
@@ -613,7 +664,7 @@ def upload():
         shape=frame.shape,
         columns=list(frame.columns),
         preview=preview,
-        binary_candidates=binary_candidates,
+        target_options=target_options,
     )
 
 
@@ -674,7 +725,10 @@ def train_page():
     session["current_file"] = str(path)
     columns = list(frame.columns)
     session["current_columns"] = columns
+    classification_columns = find_classification_targets(frame)
     binary_columns = find_binary_targets(frame)
+    target_options = _target_options(frame)
+    class_counts = {item["name"]: item["classes"] for item in target_options}
     if request.method == "GET":
         selected_target = choose_default_target(frame, session.get("target"))
         session["target"] = selected_target
@@ -682,7 +736,9 @@ def train_page():
             "train.html",
             columns=columns,
             selected_target=selected_target,
+            classification_columns=classification_columns,
             binary_columns=binary_columns,
+            class_counts=class_counts,
             model_labels=MODEL_LABELS,
         )
     # start training
@@ -702,29 +758,44 @@ def train_page():
             "train.html",
             columns=columns,
             selected_target=None,
+            classification_columns=classification_columns,
             binary_columns=binary_columns,
+            class_counts=class_counts,
             model_labels=MODEL_LABELS,
         )
-    if target not in binary_columns:
-        if target not in frame.columns:
-            message = f"Target column '{target}' was not found in the uploaded file."
+    if target not in frame.columns:
+        flash(f"Target column '{target}' was not found in the uploaded file.", "error")
+        return render_template(
+            "train.html",
+            columns=columns,
+            selected_target=target,
+            classification_columns=classification_columns,
+            binary_columns=binary_columns,
+            class_counts=class_counts,
+            model_labels=MODEL_LABELS,
+        )
+    if target not in classification_columns:
+        class_count = target_class_count(frame[target])
+        message = (
+            f"Target '{target}' has {class_count} class(es); classification needs between "
+            "2 and 20 classes."
+        )
+        if classification_columns:
+            message += f" Choose a classification column such as '{classification_columns[-1]}'."
         else:
-            class_count = int(frame[target].dropna().nunique())
-            message = (
-                f"Target '{target}' has {class_count} classes; binary classification needs exactly 2."
-            )
-            if binary_columns:
-                message += f" Choose a binary column such as '{binary_columns[-1]}'."
-            else:
-                message += " No binary columns were detected in this file."
+            message += " No classification columns were detected in this file."
         flash(message, "error")
         return render_template(
             "train.html",
             columns=columns,
             selected_target=target,
+            classification_columns=classification_columns,
             binary_columns=binary_columns,
+            class_counts=class_counts,
             model_labels=MODEL_LABELS,
         )
+    if target not in binary_columns:
+        positive_label = None
     session["target"] = target
     config = TrainConfig(
         target=target,
@@ -785,8 +856,13 @@ def train_status(job_id):
                         "data_file": session.get("current_file"),
                         "model_path": str(saved),
                         "target": result.metadata.get("target"),
-                        "positive_label": str(result.metadata.get("positive_label")),
+                        "positive_label": (
+                            str(result.metadata.get("positive_label"))
+                            if result.metadata.get("positive_label") is not None
+                            else None
+                        ),
                         "config": {
+                            "task_type": result.metadata.get("task_type"),
                             "test_size": result.metadata.get("test_size"),
                             "cv_folds": result.metadata.get("cv_folds"),
                             "scoring": result.metadata.get("scoring"),
@@ -820,25 +896,62 @@ def evaluate_page():
     if not bundle:
         flash("Train or load a model first.", "error")
         return redirect(url_for("train_page"))
-    threshold = float(request.form.get("threshold", bundle.get("metadata", {}).get("threshold", 0.5))) if request.method == "POST" else float(bundle.get("metadata", {}).get("threshold", 0.5))
-    session["threshold"] = threshold
+    metadata = bundle.get("metadata", {})
+    task_type = metadata.get("task_type") or (
+        "binary" if metadata.get("positive_label") is not None else "multiclass"
+    )
+    default_threshold = float(metadata.get("threshold", 0.5))
+    if task_type == "binary" and request.method == "POST":
+        threshold = float(request.form.get("threshold", default_threshold))
+    else:
+        threshold = default_threshold
     metrics = None
+    metrics_source = None
     # try to evaluate on current file if labeled
     if "current_file" in session and request.method == "POST" and request.form.get("evaluate_on_current"):
         try:
             frame = load_dataframe(session["current_file"])
-            metadata = bundle.get("metadata", {})
             target = metadata.get("target")
             if target and target in frame.columns:
-                positive = metadata.get("positive_label")
                 clean = frame.dropna(subset=[target])
-                y = clean[target].map(lambda v: 1 if (v == positive or str(v) == str(positive)) else 0).to_numpy()
-                if len(np.unique(y)) >= 2:
-                    probs = predict_probabilities(bundle, clean)
-                    metrics = compute_metrics(y, probs, threshold)
+                if task_type == "binary":
+                    positive = metadata.get("positive_label")
+                    y = clean[target].map(
+                        lambda v: 1 if (v == positive or str(v) == str(positive)) else 0
+                    ).to_numpy()
+                    if len(np.unique(y)) >= 2:
+                        probs = predict_probabilities(bundle, clean)
+                        metrics = compute_metrics(y, probs, threshold)
+                else:
+                    classes = metadata.get("classes") or []
+                    if not classes:
+                        raise ValueError("Model metadata is missing the class labels.")
+                    y = encode_target_values(clean[target], classes)
+                    probs = predict_proba_matrix(bundle, clean)
+                    metrics = compute_multiclass_metrics(y, probs, classes)
         except Exception as e:
             flash(f"Evaluation failed: {e}", "error")
-    return render_template("evaluate.html", bundle=bundle, threshold=threshold, metrics=metrics, model_labels=MODEL_LABELS)
+
+    if metrics is not None:
+        metrics_source = "current"
+    else:
+        stored_metrics = metadata.get("test_metrics")
+        if isinstance(stored_metrics, dict) and stored_metrics.get("confusion_matrix"):
+            metrics = stored_metrics
+            metrics_source = "training"
+            if task_type == "binary":
+                threshold = float(stored_metrics.get("threshold", default_threshold))
+    session["threshold"] = threshold
+    return render_template(
+        "evaluate.html",
+        bundle=bundle,
+        threshold=threshold,
+        metrics=metrics,
+        metrics_source=metrics_source,
+        task_type=task_type,
+        classes=metadata.get("classes") or [],
+        model_labels=MODEL_LABELS,
+    )
 
 
 def _numeric_feature_names(metadata: dict[str, Any], features: list[str]) -> set[str]:
@@ -871,6 +984,59 @@ def _example_record(frame: pd.DataFrame, features: list[str], target: str | None
     return result
 
 
+def save_manual_prediction(
+    model_path: str | None,
+    record: dict[str, Any],
+    result: dict[str, Any],
+) -> None:
+    conn = get_db()
+    try:
+        conn.execute(
+            "INSERT INTO manual_predictions (id, model_path, inputs_json, result_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                str(uuid.uuid4()),
+                model_path,
+                json.dumps(record, default=str),
+                json.dumps(result, default=str),
+                datetime.now().isoformat(),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_recent_manual_predictions(
+    model_path: str | None,
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT inputs_json, result_json, created_at FROM manual_predictions "
+            "WHERE model_path = ? ORDER BY created_at DESC LIMIT ?",
+            (model_path, limit),
+        ).fetchall()
+    finally:
+        conn.close()
+    entries = []
+    for row in rows:
+        try:
+            inputs = json.loads(row["inputs_json"] or "{}")
+            result = json.loads(row["result_json"] or "{}")
+        except (TypeError, ValueError):
+            continue
+        entries.append(
+            {
+                "inputs": inputs,
+                "result": result,
+                "created_at": row["created_at"],
+            }
+        )
+    return entries
+
+
 @app.route("/predict", methods=["GET", "POST"])
 def predict_page():
     bundle = _load_current_bundle()
@@ -878,6 +1044,9 @@ def predict_page():
         flash("Train or load a model first.", "error")
         return redirect(url_for("train_page"))
     metadata = bundle.get("metadata", {})
+    task_type = metadata.get("task_type") or (
+        "binary" if metadata.get("positive_label") is not None else "multiclass"
+    )
     features = metadata.get("feature_columns", [])
     threshold = float(session.get("threshold", metadata.get("threshold", 0.5)))
     feature_values = dict(metadata.get("feature_values") or {})
@@ -898,7 +1067,13 @@ def predict_page():
         and example.get("target") is not None
         and str(example.get("target")) == str(metadata.get("positive_label"))
     )
+    example_target_label = (
+        str(example.get("target"))
+        if example and example.get("target") is not None
+        else None
+    )
     numeric_features = _numeric_feature_names(metadata, features)
+    model_path = session.get("current_model_path")
     result = None
     if request.method == "POST" and request.form.get("mode") == "manual":
         record = {}
@@ -908,16 +1083,23 @@ def predict_page():
             result = predict_record(bundle, record, threshold=threshold)
         except Exception as e:
             flash(f"Prediction failed: {e}", "error")
+        else:
+            save_manual_prediction(model_path, record, result)
+    recent_predictions = get_recent_manual_predictions(model_path)
     return render_template(
         "predict.html",
         bundle=bundle,
         features=features,
         threshold=threshold,
         result=result,
+        recent_predictions=recent_predictions,
         feature_values=feature_values,
         numeric_features=numeric_features,
         example=example,
         example_target_positive=example_target_positive,
+        example_target_label=example_target_label,
+        task_type=task_type,
+        classes=metadata.get("classes") or [],
         model_labels=MODEL_LABELS,
     )
 
@@ -940,17 +1122,20 @@ def predict_batch():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     saved_name = f"batch_{timestamp}_{filename}"
     path = UPLOAD_DIR / saved_name
-    f.save(path)
-    frame = load_dataframe(str(path))
     threshold = float(session.get("threshold", bundle.get("metadata", {}).get("threshold", 0.5)))
     try:
+        f.save(path)
+        frame = load_dataframe(str(path))
         out = predict_frame(bundle, frame, threshold=threshold)
     except Exception as e:
         flash(f"Batch prediction failed: {e}", "error")
         return redirect(url_for("predict_page"))
     out_path = REPORTS_DIR / f"predictions_{timestamp}.csv"
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    save_dataframe(out, str(out_path))
+    try:
+        save_dataframe(out, str(out_path))
+    except Exception as e:
+        flash(f"Could not save batch prediction: {e}", "error")
+        return redirect(url_for("predict_page"))
     conn = get_db()
     cur = conn.cursor()
     cur.execute(
@@ -959,15 +1144,81 @@ def predict_batch():
     )
     conn.commit()
     conn.close()
-    return send_file(str(out_path), as_attachment=True, download_name=out_path.name)
+    return send_file(str(out_path.resolve()), as_attachment=True, download_name=out_path.name)
+
+
+def _read_model_metadata(path: Path) -> dict[str, Any]:
+    sidecar = path.with_suffix(".json")
+    if not sidecar.exists():
+        return {}
+    try:
+        data = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _model_task_type(metadata: dict[str, Any]) -> str | None:
+    task_type = metadata.get("task_type")
+    if task_type in {"binary", "multiclass"}:
+        return str(task_type)
+    classes = metadata.get("classes") or []
+    if metadata.get("positive_label") is not None or len(classes) == 2:
+        return "binary"
+    if len(classes) > 2:
+        return "multiclass"
+    return None
+
+
+def _as_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _model_entry(path: Path) -> dict[str, Any]:
+    metadata = _read_model_metadata(path)
+    metrics = metadata.get("test_metrics") or {}
+    classes = metadata.get("classes") or []
+    feature_columns = metadata.get("feature_columns") or []
+    performance = _as_float(metrics.get("f1"))
+    if performance is None:
+        performance = _as_float(metrics.get("accuracy"))
+    return {
+        "path": str(path),
+        "name": path.name,
+        "mtime": datetime.fromtimestamp(path.stat().st_mtime).isoformat(),
+        "metadata": metadata,
+        "has_metadata": bool(metadata),
+        "target": metadata.get("target"),
+        "task_type": _model_task_type(metadata),
+        "model_label": metadata.get("model_label") or metadata.get("model_name"),
+        "model_name": metadata.get("model_name"),
+        "classes": classes,
+        "class_count": metadata.get("class_count") or (len(classes) if classes else None),
+        "positive_label": metadata.get("positive_label"),
+        "threshold": metadata.get("threshold"),
+        "feature_columns": feature_columns,
+        "feature_count": len(feature_columns),
+        "rows": metadata.get("rows"),
+        "scoring": metadata.get("scoring"),
+        "cv_folds": metadata.get("cv_folds"),
+        "created_at": metadata.get("created_at"),
+        "performance": performance,
+        "roc_auc": _as_float(metrics.get("roc_auc")),
+        "metrics": metrics,
+        "leaderboard": metadata.get("leaderboard") or [],
+        "warnings": metadata.get("warnings") or [],
+        "bundle_version": metadata.get("bundle_version"),
+        "seed": metadata.get("seed"),
+    }
 
 
 @app.route("/model")
 def model_page():
     bundle = _load_current_bundle()
-    models = []
-    for p in MODELS_DIR.glob("*.joblib"):
-        models.append({"path": str(p), "name": p.name, "mtime": datetime.fromtimestamp(p.stat().st_mtime).isoformat()})
+    models = [_model_entry(p) for p in MODELS_DIR.glob("*.joblib")]
     models.sort(key=lambda x: x["mtime"], reverse=True)
     return render_template("model.html", bundle=bundle, models=models, model_labels=MODEL_LABELS)
 
