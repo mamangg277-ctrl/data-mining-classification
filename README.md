@@ -1,6 +1,6 @@
 # Data Classifier
 
-A browser-based, desktop, and command-line tool for **binary classification** of tabular data. Load a CSV, Excel, or JSON file, pick a target column with two classes (for example `true`/`false` or `A`/`B`), and train, compare, evaluate, and use classifiers without writing code. **Works fully offline** - all processing and history stay on your machine.
+A browser-based, desktop, and command-line tool for **binary and multiclass classification** of tabular data. Load a CSV, Excel, or JSON file, pick a target column with two or more classes (for example `true`/`false`, `A`/`B`, or `low`/`medium`/`high`), and train, compare, evaluate, and use classifiers without writing code. **Works fully offline** - all processing and history stay on your machine.
 
 ---
 
@@ -66,7 +66,7 @@ dc --help
 
 1. **Tab Data:**
    * Upload file dataset tabular kamu (format `.csv`, `.xlsx`, atau `.json`). Contoh dataset bawaan tersedia di `data.csv`.
-   * Pilih kolom target biner (2 kelas nilai).
+   * Pilih kolom target klasifikasi: 2 kelas (biner) atau lebih (multikelas).
 2. **Tab Explore (EDA):**
    * Periksa statistik deskriptif, missing values, dan distribusi kelas target. Laporan tersimpan otomatis di `reports/`.
 3. **Tab Train:**
@@ -74,9 +74,11 @@ dc --help
    * Klik **Train Model** (proses training berjalan di background).
 4. **Tab Evaluate:**
    * Lihat metrik performa (*Accuracy*, *Precision*, *Recall*, *F1-Score*, *ROC-AUC*, *Confusion Matrix*).
-   * Geser slider probabilitas threshold untuk melihat pengaruhnya terhadap klasifikasi.
+   * Untuk model biner, geser slider probabilitas threshold untuk melihat pengaruhnya terhadap klasifikasi.
+   * Untuk model multikelas, lihat metrik macro/weighted, metrik per kelas, dan confusion matrix N×N.
 5. **Tab Predict:**
    * Lakukan prediksi tunggal (masukkan nilai fitur secara manual).
+   * Model biner menampilkan probabilitas kelas positif dan threshold; model multikelas menampilkan kelas terprediksi beserta probabilitas setiap kelas.
    * Atau lakukan prediksi massal (*batch prediction*) dengan mengunggah file data baru dan unduh hasilnya ke CSV/Excel.
 6. **Tab History & Storage:**
    * Pantau riwayat analisis dan kelola ruang penyimpanan lokal.

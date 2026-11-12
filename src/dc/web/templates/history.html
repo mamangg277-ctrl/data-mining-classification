@@ -21,7 +21,7 @@
             <th>Tipe</th>
             <th>Status</th>
             <th>Target</th>
-            <th>Kelas Positif</th>
+            <th>Kelas Positif (biner)</th>
             <th>Model</th>
             <th>Berkas Data</th>
           </tr>
@@ -37,7 +37,7 @@
                 </span>
               </td>
               <td><strong>{{ r.target }}</strong></td>
-              <td><code>{{ r.positive_label }}</code></td>
+              <td>{% if r.positive_label %}<code>{{ r.positive_label }}</code>{% else %}<span class="text-muted small">multikelas</span>{% endif %}</td>
               <td class="small">{{ r.model_path }}</td>
               <td class="small text-truncate" style="max-width: 250px;">{{ r.data_file }}</td>
             </tr>

@@ -140,18 +140,38 @@ def infer_schema(frame: pd.DataFrame, target: str | None = None) -> list[dict[st
     return schema
 
 
-def find_binary_targets(frame: pd.DataFrame) -> list[str]:
-    targets = []
+def target_class_count(series: pd.Series) -> int:
+    """Count distinct target values, ignoring surrounding whitespace for text columns."""
+    non_null = series.dropna()
+    if non_null.empty:
+        return 0
+    if non_null.dtype == object or ptypes.is_string_dtype(non_null):
+        return int(non_null.astype(str).str.strip().nunique())
+    return int(non_null.nunique())
+
+
+def find_classification_targets(
+    frame: pd.DataFrame,
+    max_classes: int = 20,
+) -> list[str]:
+    """Return columns that look like classification targets with 2..max_classes values."""
+    row_count = len(frame)
+    targets: list[str] = []
     for name in frame.columns:
         non_null = frame[name].dropna()
         if non_null.empty:
             continue
-        if non_null.nunique() == 2:
-            targets.append(str(name))
-        elif non_null.dtype == object or ptypes.is_string_dtype(non_null):
-            if non_null.astype(str).str.strip().str.upper().nunique() == 2:
-                targets.append(str(name))
+        unique = target_class_count(non_null)
+        if unique < 2 or unique > max_classes:
+            continue
+        if row_count > 1 and unique == row_count:
+            continue
+        targets.append(str(name))
     return targets
+
+
+def find_binary_targets(frame: pd.DataFrame) -> list[str]:
+    return find_classification_targets(frame, max_classes=2)
 
 
 def unique_values(frame: pd.DataFrame, column: str, limit: int = 50) -> list[Any]:

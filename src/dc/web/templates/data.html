@@ -41,14 +41,14 @@
     <a href="{{ url_for('explore') }}" class="btn btn-sm btn-outline-primary">Lanjut ke Explore &rarr;</a>
   </div>
   <div class="card-body">
-    <!-- Binary Target Candidates -->
+    <!-- Classification Target Candidates -->
     <div class="p-3 mb-3 rounded border bg-light">
-      <div class="small fw-bold text-secondary mb-1">Kandidat Target Biner Terdeteksi:</div>
+      <div class="small fw-bold text-secondary mb-1">Kandidat Target Klasifikasi Terdeteksi:</div>
       <div class="d-flex flex-wrap gap-2">
-        {% for c in binary_candidates %}
-          <span class="badge bg-primary fs-6">{{ c }}</span>
+        {% for item in target_options %}
+          <span class="badge bg-primary fs-6">{{ item.name }} <span class="badge bg-light text-dark ms-1">{{ item.classes }} kelas</span></span>
         {% else %}
-          <span class="text-muted small">Tidak ada kolom yang memiliki tepat dua nilai unik.</span>
+          <span class="text-muted small">Tidak ada kolom yang memiliki 2-20 nilai unik.</span>
         {% endfor %}
       </div>
     </div>

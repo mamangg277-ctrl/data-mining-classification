@@ -29,11 +29,30 @@ from flask import (
 from werkzeug.utils import secure_filename
 
 from dc.eda import inspect_dataframe, save_report
-from dc.evaluate import compute_metrics
-from dc.io import feature_value_options, find_binary_targets, load_dataframe, save_dataframe
+from dc.evaluate import compute_metrics, compute_multiclass_metrics
+from dc.io import (
+    feature_value_options,
+    find_binary_targets,
+    find_classification_targets,
+    load_dataframe,
+    save_dataframe,
+    target_class_count,
+)
 from dc.models import MODEL_LABELS
-from dc.predict import predict_frame, predict_probabilities, predict_record
-from dc.train import TrainConfig, TrainResult, load_bundle, save_result, train_model
+from dc.predict import (
+    predict_frame,
+    predict_proba_matrix,
+    predict_probabilities,
+    predict_record,
+)
+from dc.train import (
+    TrainConfig,
+    TrainResult,
+    encode_target_values,
+    load_bundle,
+    save_result,
+    train_model,
+)
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 app.secret_key = os.environ.get("DC_SECRET_KEY") or "dataclassifier-dev-key-change-in-production"
@@ -57,20 +76,31 @@ training_queues: dict[str, queue.Queue] = {}
 
 
 def choose_default_target(frame: pd.DataFrame, preferred: str | None = None) -> str | None:
-    """Pick a sensible binary target for the training form."""
+    """Pick a sensible classification target for the training form."""
     columns = [str(column) for column in frame.columns]
     if not columns:
         return None
-    binary = set(find_binary_targets(frame))
-    if preferred is not None and str(preferred) in binary:
+    targets = find_classification_targets(frame)
+    target_set = set(targets)
+    if preferred is not None and str(preferred) in target_set:
         return str(preferred)
     last = columns[-1]
-    if last in binary:
+    if last in target_set:
         return last
+    binary = set(find_binary_targets(frame))
     binary_columns = [column for column in columns if column in binary]
     if binary_columns:
         return binary_columns[-1]
+    if targets:
+        return targets[-1]
     return last
+
+
+def _target_options(frame: pd.DataFrame) -> list[dict[str, Any]]:
+    return [
+        {"name": name, "classes": target_class_count(frame[name])}
+        for name in find_classification_targets(frame)
+    ]
 
 
 def get_db():
@@ -560,7 +590,7 @@ def data_page():
             session["current_columns"] = list(frame.columns)
             if "target" not in session or session.get("target") not in frame.columns:
                 session["target"] = choose_default_target(frame)
-            binary_candidates = find_binary_targets(frame)
+            target_options = _target_options(frame)
             preview = frame.head(100).to_dict(orient="records")
             clean_filename = path.name.split("_", 2)[-1] if "_" in path.name else path.name
             return render_template(
@@ -570,7 +600,7 @@ def data_page():
                 shape=frame.shape,
                 columns=list(frame.columns),
                 preview=preview,
-                binary_candidates=binary_candidates,
+                target_options=target_options,
             )
         except Exception:
             pass
@@ -600,7 +630,7 @@ def upload():
     except Exception as e:
         flash(f"Failed to load file: {e}", "error")
         return redirect(url_for("data_page"))
-    binary_candidates = find_binary_targets(frame)
+    target_options = _target_options(frame)
     session["current_file"] = str(path)
     session["current_columns"] = list(frame.columns)
     session["target"] = choose_default_target(frame)
@@ -613,7 +643,7 @@ def upload():
         shape=frame.shape,
         columns=list(frame.columns),
         preview=preview,
-        binary_candidates=binary_candidates,
+        target_options=target_options,
     )
 
 
@@ -674,7 +704,10 @@ def train_page():
     session["current_file"] = str(path)
     columns = list(frame.columns)
     session["current_columns"] = columns
+    classification_columns = find_classification_targets(frame)
     binary_columns = find_binary_targets(frame)
+    target_options = _target_options(frame)
+    class_counts = {item["name"]: item["classes"] for item in target_options}
     if request.method == "GET":
         selected_target = choose_default_target(frame, session.get("target"))
         session["target"] = selected_target
@@ -682,7 +715,9 @@ def train_page():
             "train.html",
             columns=columns,
             selected_target=selected_target,
+            classification_columns=classification_columns,
             binary_columns=binary_columns,
+            class_counts=class_counts,
             model_labels=MODEL_LABELS,
         )
     # start training
@@ -702,29 +737,44 @@ def train_page():
             "train.html",
             columns=columns,
             selected_target=None,
+            classification_columns=classification_columns,
             binary_columns=binary_columns,
+            class_counts=class_counts,
             model_labels=MODEL_LABELS,
         )
-    if target not in binary_columns:
-        if target not in frame.columns:
-            message = f"Target column '{target}' was not found in the uploaded file."
+    if target not in frame.columns:
+        flash(f"Target column '{target}' was not found in the uploaded file.", "error")
+        return render_template(
+            "train.html",
+            columns=columns,
+            selected_target=target,
+            classification_columns=classification_columns,
+            binary_columns=binary_columns,
+            class_counts=class_counts,
+            model_labels=MODEL_LABELS,
+        )
+    if target not in classification_columns:
+        class_count = target_class_count(frame[target])
+        message = (
+            f"Target '{target}' has {class_count} class(es); classification needs between "
+            "2 and 20 classes."
+        )
+        if classification_columns:
+            message += f" Choose a classification column such as '{classification_columns[-1]}'."
         else:
-            class_count = int(frame[target].dropna().nunique())
-            message = (
-                f"Target '{target}' has {class_count} classes; binary classification needs exactly 2."
-            )
-            if binary_columns:
-                message += f" Choose a binary column such as '{binary_columns[-1]}'."
-            else:
-                message += " No binary columns were detected in this file."
+            message += " No classification columns were detected in this file."
         flash(message, "error")
         return render_template(
             "train.html",
             columns=columns,
             selected_target=target,
+            classification_columns=classification_columns,
             binary_columns=binary_columns,
+            class_counts=class_counts,
             model_labels=MODEL_LABELS,
         )
+    if target not in binary_columns:
+        positive_label = None
     session["target"] = target
     config = TrainConfig(
         target=target,
@@ -785,8 +835,13 @@ def train_status(job_id):
                         "data_file": session.get("current_file"),
                         "model_path": str(saved),
                         "target": result.metadata.get("target"),
-                        "positive_label": str(result.metadata.get("positive_label")),
+                        "positive_label": (
+                            str(result.metadata.get("positive_label"))
+                            if result.metadata.get("positive_label") is not None
+                            else None
+                        ),
                         "config": {
+                            "task_type": result.metadata.get("task_type"),
                             "test_size": result.metadata.get("test_size"),
                             "cv_folds": result.metadata.get("cv_folds"),
                             "scoring": result.metadata.get("scoring"),
@@ -820,25 +875,50 @@ def evaluate_page():
     if not bundle:
         flash("Train or load a model first.", "error")
         return redirect(url_for("train_page"))
-    threshold = float(request.form.get("threshold", bundle.get("metadata", {}).get("threshold", 0.5))) if request.method == "POST" else float(bundle.get("metadata", {}).get("threshold", 0.5))
+    metadata = bundle.get("metadata", {})
+    task_type = metadata.get("task_type") or (
+        "binary" if metadata.get("positive_label") is not None else "multiclass"
+    )
+    default_threshold = float(metadata.get("threshold", 0.5))
+    if task_type == "binary" and request.method == "POST":
+        threshold = float(request.form.get("threshold", default_threshold))
+    else:
+        threshold = default_threshold
     session["threshold"] = threshold
     metrics = None
     # try to evaluate on current file if labeled
     if "current_file" in session and request.method == "POST" and request.form.get("evaluate_on_current"):
         try:
             frame = load_dataframe(session["current_file"])
-            metadata = bundle.get("metadata", {})
             target = metadata.get("target")
             if target and target in frame.columns:
-                positive = metadata.get("positive_label")
                 clean = frame.dropna(subset=[target])
-                y = clean[target].map(lambda v: 1 if (v == positive or str(v) == str(positive)) else 0).to_numpy()
-                if len(np.unique(y)) >= 2:
-                    probs = predict_probabilities(bundle, clean)
-                    metrics = compute_metrics(y, probs, threshold)
+                if task_type == "binary":
+                    positive = metadata.get("positive_label")
+                    y = clean[target].map(
+                        lambda v: 1 if (v == positive or str(v) == str(positive)) else 0
+                    ).to_numpy()
+                    if len(np.unique(y)) >= 2:
+                        probs = predict_probabilities(bundle, clean)
+                        metrics = compute_metrics(y, probs, threshold)
+                else:
+                    classes = metadata.get("classes") or []
+                    if not classes:
+                        raise ValueError("Model metadata is missing the class labels.")
+                    y = encode_target_values(clean[target], classes)
+                    probs = predict_proba_matrix(bundle, clean)
+                    metrics = compute_multiclass_metrics(y, probs, classes)
         except Exception as e:
             flash(f"Evaluation failed: {e}", "error")
-    return render_template("evaluate.html", bundle=bundle, threshold=threshold, metrics=metrics, model_labels=MODEL_LABELS)
+    return render_template(
+        "evaluate.html",
+        bundle=bundle,
+        threshold=threshold,
+        metrics=metrics,
+        task_type=task_type,
+        classes=metadata.get("classes") or [],
+        model_labels=MODEL_LABELS,
+    )
 
 
 def _numeric_feature_names(metadata: dict[str, Any], features: list[str]) -> set[str]:
@@ -878,6 +958,9 @@ def predict_page():
         flash("Train or load a model first.", "error")
         return redirect(url_for("train_page"))
     metadata = bundle.get("metadata", {})
+    task_type = metadata.get("task_type") or (
+        "binary" if metadata.get("positive_label") is not None else "multiclass"
+    )
     features = metadata.get("feature_columns", [])
     threshold = float(session.get("threshold", metadata.get("threshold", 0.5)))
     feature_values = dict(metadata.get("feature_values") or {})
@@ -897,6 +980,11 @@ def predict_page():
         example
         and example.get("target") is not None
         and str(example.get("target")) == str(metadata.get("positive_label"))
+    )
+    example_target_label = (
+        str(example.get("target"))
+        if example and example.get("target") is not None
+        else None
     )
     numeric_features = _numeric_feature_names(metadata, features)
     result = None
@@ -918,6 +1006,9 @@ def predict_page():
         numeric_features=numeric_features,
         example=example,
         example_target_positive=example_target_positive,
+        example_target_label=example_target_label,
+        task_type=task_type,
+        classes=metadata.get("classes") or [],
         model_labels=MODEL_LABELS,
     )
 

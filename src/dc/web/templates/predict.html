@@ -18,12 +18,19 @@
       <div>
         <span class="text-muted small">Target:</span> <strong>{{ bundle.metadata.target if bundle.metadata else '-' }}</strong>
       </div>
+      {% if task_type == 'binary' %}
       <div>
         <span class="text-muted small">Ambang Batas:</span> <span class="badge bg-dark">{{ '%.2f'|format(threshold) }}</span>
       </div>
       <div>
         <a href="{{ url_for('evaluate_page') }}" class="btn btn-sm btn-outline-secondary">Ubah Threshold</a>
       </div>
+      {% else %}
+      <div>
+        <span class="text-muted small">Kelas:</span>
+        {% for c in classes %}<span class="badge bg-light text-dark border">{{ c }}</span>{% endfor %}
+      </div>
+      {% endif %}
     </div>
   </div>
 </div>
@@ -42,8 +49,8 @@
           <div class="d-flex justify-content-between align-items-center mb-2">
             <span class="small fw-bold text-secondary text-uppercase">Contoh Data dari Dataset Aktif:</span>
             {% if example.target is not none %}
-              <span class="badge {% if example_target_positive %}bg-success{% else %}bg-secondary{% endif %} fs-6 px-3 py-1">
-                {{ bundle.metadata.target if bundle.metadata else '-' }} = {{ example.target }}
+              <span class="badge {% if task_type == 'binary' and example_target_positive %}bg-success{% elif task_type == 'binary' %}bg-secondary{% else %}bg-info{% endif %} fs-6 px-3 py-1">
+                {{ bundle.metadata.target if bundle.metadata else '-' }} = {{ example_target_label }}
               </span>
             {% endif %}
           </div>
@@ -95,11 +102,12 @@
         <div class="mt-4 p-3 border rounded bg-light">
           <div class="d-flex justify-content-between align-items-center mb-2">
             <span class="small fw-bold text-secondary text-uppercase">Hasil Prediksi:</span>
-            <span class="badge {% if result.prediction == result.positive_label %}bg-success{% else %}bg-secondary{% endif %} fs-6 px-3 py-1">
+            <span class="badge {% if result.task_type == 'binary' and result.prediction == result.positive_label %}bg-success{% elif result.task_type == 'binary' %}bg-secondary{% else %}bg-success{% endif %} fs-6 px-3 py-1">
               {{ result.prediction }}
             </span>
           </div>
 
+          {% if result.task_type == 'binary' %}
           <div class="mb-2">
             <div class="d-flex justify-content-between small text-secondary mb-1">
               <span>Probabilitas Kelas Positif ({{ result.positive_label }}):</span>
@@ -115,6 +123,24 @@
             <span>Threshold: <code>{{ '%.2f'|format(result.threshold) }}</code></span>
             <span>Status: <strong>{% if result.prediction == result.positive_label %}Positif{% else %}Negatif{% endif %}</strong></span>
           </div>
+          {% else %}
+          <div class="mb-2">
+            {% for label, probability in result.probabilities.items() %}
+            <div class="d-flex justify-content-between small text-secondary mb-1">
+              <span>{{ label }}{% if label == result.prediction %} <span class="badge bg-success-subtle text-success border border-success">terpilih</span>{% endif %}:</span>
+              <strong>{{ '%.2f'|format(probability * 100) }}%</strong>
+            </div>
+            <div class="progress mb-2" style="height: 8px;">
+              <div class="progress-bar {% if label == result.prediction %}bg-success{% else %}bg-secondary{% endif %}"
+                   style="width: {{ probability * 100 }}%"></div>
+            </div>
+            {% endfor %}
+          </div>
+          <div class="d-flex justify-content-between small text-muted border-top pt-2 mt-2">
+            <span>Metode: <code>argmax</code></span>
+            <span>Kelas terprediksi: <strong>{{ result.prediction }}</strong></span>
+          </div>
+          {% endif %}
         </div>
         {% endif %}
       </div>
@@ -141,11 +167,15 @@
 
         <div class="mt-auto p-3 border rounded bg-light small text-muted">
           <div class="fw-bold text-dark mb-1">Format Berkas Unduhan:</div>
-          <div>Setiap baris data akan ditambahkan 3 kolom evaluasi:</div>
+          <div>Setiap baris data akan ditambahkan kolom evaluasi:</div>
           <ul class="mb-0 ps-3 mt-1">
             <li><code>prediction</code>: label kelas hasil klasifikasi</li>
-            <li><code>probability</code>: estimasi probabilitas kelas positif</li>
+            {% if task_type == 'binary' %}
+            <li><code>probability_&lt;kelas positif&gt;</code>: estimasi probabilitas kelas positif</li>
             <li><code>threshold</code>: ambang batas yang digunakan</li>
+            {% else %}
+            <li><code>probability_&lt;kelas&gt;</code>: probabilitas untuk setiap kelas</li>
+            {% endif %}
           </ul>
         </div>
       </div>

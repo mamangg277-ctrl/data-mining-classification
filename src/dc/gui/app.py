@@ -9,11 +9,19 @@ import numpy as np
 import pandas as pd
 
 from dc.eda import inspect_dataframe, save_report
-from dc.evaluate import compute_metrics, format_metrics, roc_points
-from dc.io import load_dataframe, save_dataframe, unique_values
+from dc.evaluate import compute_metrics, compute_multiclass_metrics, format_metrics, roc_points
+from dc.io import find_classification_targets, load_dataframe, save_dataframe, unique_values
 from dc.models import MODEL_LABELS
-from dc.predict import predict_frame, predict_probabilities, predict_record
-from dc.train import TrainConfig, TrainResult, load_bundle, save_bundle, save_result, train_model
+from dc.predict import predict_frame, predict_proba_matrix, predict_probabilities, predict_record
+from dc.train import (
+    TrainConfig,
+    TrainResult,
+    encode_target_values,
+    load_bundle,
+    save_bundle,
+    save_result,
+    train_model,
+)
 
 try:
     import tkinter as tk
@@ -61,6 +69,7 @@ class ClassifierApp:
         self.status_var = tk.StringVar(value="Load a data file to begin.")
         self.path_var = tk.StringVar(value="No file loaded")
         self.threshold_label_var = tk.StringVar(value="0.50")
+        self.threshold_widgets: list[Any] = []
         self.progress_var = tk.DoubleVar(value=0.0)
         self.positive_var = tk.StringVar()
         self.target_var = tk.StringVar()
@@ -82,7 +91,7 @@ class ClassifierApp:
         )
         ttk.Label(
             header,
-            text="Train and use binary classifiers on CSV, Excel, or JSON data",
+            text="Train and use binary or multiclass classifiers on CSV, Excel, or JSON data",
         ).pack(side="left", padx=12)
 
         self.notebook = ttk.Notebook(self.root)
@@ -280,16 +289,20 @@ class ClassifierApp:
         ttk.Button(
             controls, text="Evaluate model on loaded data", command=self.evaluate_current
         ).pack(side="left")
-        ttk.Label(controls, text="Threshold").pack(side="left", padx=(20, 6))
-        ttk.Scale(
+        threshold_label = ttk.Label(controls, text="Threshold")
+        threshold_label.pack(side="left", padx=(20, 6))
+        threshold_scale = ttk.Scale(
             controls,
             from_=0.0,
             to=1.0,
             variable=self.threshold_var,
             command=self._on_threshold,
             length=260,
-        ).pack(side="left")
-        ttk.Label(controls, textvariable=self.threshold_label_var).pack(side="left", padx=8)
+        )
+        threshold_scale.pack(side="left")
+        threshold_value = ttk.Label(controls, textvariable=self.threshold_label_var)
+        threshold_value.pack(side="left", padx=8)
+        self.threshold_widgets.extend([threshold_label, threshold_scale, threshold_value])
 
         metrics_frame = ttk.LabelFrame(tab, text="Metrics", padding=6)
         metrics_frame.grid(row=1, column=0, sticky="nsew", pady=8, padx=(0, 6))
@@ -314,16 +327,22 @@ class ClassifierApp:
 
         controls = ttk.Frame(tab)
         controls.grid(row=0, column=0, columnspan=2, sticky="ew")
-        ttk.Label(controls, text="Decision threshold").pack(side="left")
-        ttk.Scale(
+        predict_threshold_label = ttk.Label(controls, text="Decision threshold")
+        predict_threshold_label.pack(side="left")
+        predict_threshold_scale = ttk.Scale(
             controls,
             from_=0.0,
             to=1.0,
             variable=self.threshold_var,
             command=self._on_threshold,
             length=220,
-        ).pack(side="left", padx=8)
-        ttk.Label(controls, textvariable=self.threshold_label_var).pack(side="left")
+        )
+        predict_threshold_scale.pack(side="left", padx=8)
+        predict_threshold_value = ttk.Label(controls, textvariable=self.threshold_label_var)
+        predict_threshold_value.pack(side="left")
+        self.threshold_widgets.extend(
+            [predict_threshold_label, predict_threshold_scale, predict_threshold_value]
+        )
 
         manual = ttk.LabelFrame(tab, text="Predict a single case", padding=6)
         manual.grid(row=1, column=0, sticky="nsew", pady=8, padx=(0, 6))
@@ -428,25 +447,15 @@ class ClassifierApp:
         for column in columns:
             self.exclude_list.insert("end", column)
         self._populate_tree(self.preview_tree, frame)
-        candidates = self._binary_candidates(frame)
+        candidates = find_classification_targets(frame)
         if candidates:
-            self.target_var.set(candidates[0])
+            self.target_var.set(candidates[-1])
             self._on_target_change()
         elif columns:
             self.target_var.set(columns[-1])
             self._on_target_change()
         self.status_var.set(f"Loaded {path}")
         self.notebook.select(self.tab_data)
-
-    def _binary_candidates(self, frame: pd.DataFrame) -> list[str]:
-        candidates = []
-        for column in frame.columns:
-            try:
-                if frame[column].dropna().nunique() == 2:
-                    candidates.append(str(column))
-            except TypeError:
-                continue
-        return candidates
 
     def _on_target_change(self, _event=None) -> None:
         if self.frame is None:
@@ -457,8 +466,12 @@ class ClassifierApp:
         values = unique_values(self.frame, target)
         labels = [str(value) for value in values]
         self.positive_combo["values"] = labels
-        if labels:
+        if len(labels) == 2:
+            self.positive_combo.configure(state="readonly")
             self.positive_var.set(labels[-1])
+        else:
+            self.positive_combo.configure(state="disabled")
+            self.positive_var.set("")
         for index in range(self.exclude_list.size()):
             if self.exclude_list.get(index) == target:
                 self.exclude_list.selection_clear(index)
@@ -481,7 +494,8 @@ class ClassifierApp:
             f"Columns: {info['columns']}",
             f"Duplicate rows: {info['duplicate_rows']}",
             f"Missing cells: {info['total_missing']}",
-            f"Binary target candidates: {', '.join(info.get('binary_target_candidates', []))}",
+            f"Classification target candidates: "
+            f"{', '.join(info.get('classification_target_candidates', []))}",
             "",
         ]
         if "target" in info:
@@ -558,9 +572,11 @@ class ClassifierApp:
             return
 
         exclude = [self.exclude_list.get(index) for index in self.exclude_list.curselection()]
+        target_values = unique_values(self.frame, target)
+        positive_label = self.positive_var.get() or None if len(target_values) == 2 else None
         config = TrainConfig(
             target=target,
-            positive_label=self.positive_var.get() or None,
+            positive_label=positive_label,
             exclude=exclude,
             test_size=test_size,
             cv_folds=cv_folds,
@@ -637,10 +653,12 @@ class ClassifierApp:
                 ),
             )
         self.train_metrics_text.delete("1.0", "end")
+        positive = result.metadata.get("positive_label")
         self.train_metrics_text.insert(
             "1.0",
             format_metrics(
-                result.test_metrics, positive_label=str(result.metadata["positive_label"])
+                result.test_metrics,
+                positive_label=str(positive) if positive is not None else "positive",
             )
             + "\n\n"
             + "\n".join(f"Warning: {warning}" for warning in result.warnings),
@@ -649,7 +667,10 @@ class ClassifierApp:
             "y": result.y_test,
             "probabilities": result.y_proba,
             "data": result.X_test,
+            "task_type": result.metadata.get("task_type", "binary"),
+            "classes": result.metadata.get("classes") or [],
         }
+        self._set_binary_controls(result.metadata.get("task_type", "binary") == "binary")
         self._refresh_evaluation()
         self._build_manual_form()
         self._show_metadata(result.metadata)
@@ -671,22 +692,50 @@ class ClassifierApp:
         if not target or target not in self.frame.columns:
             messagebox.showinfo("No target", "The loaded data has no usable target column.")
             return
-        positive = metadata.get("positive_label", 1)
+        task_type = metadata.get("task_type") or (
+            "binary" if metadata.get("positive_label") is not None else "multiclass"
+        )
         clean = self.frame.dropna(subset=[target])
-        y = clean[target].map(
-            lambda value: 1 if (value == positive or str(value) == str(positive)) else 0
-        ).to_numpy()
-        if len(np.unique(y)) < 2:
-            messagebox.showinfo("Not enough classes", "The loaded data must contain both classes.")
-            return
         try:
-            probabilities = predict_probabilities(self.bundle, clean)
+            if task_type == "binary":
+                positive = metadata.get("positive_label", 1)
+                y = clean[target].map(
+                    lambda value: 1 if (value == positive or str(value) == str(positive)) else 0
+                ).to_numpy()
+                if len(np.unique(y)) < 2:
+                    messagebox.showinfo(
+                        "Not enough classes", "The loaded data must contain both classes."
+                    )
+                    return
+                probabilities = predict_probabilities(self.bundle, clean)
+            else:
+                classes = metadata.get("classes") or []
+                if not classes:
+                    messagebox.showinfo("No classes", "The model metadata has no class labels.")
+                    return
+                y = encode_target_values(clean[target], classes)
+                probabilities = predict_proba_matrix(self.bundle, clean)
         except Exception as exc:
             messagebox.showerror("Evaluation failed", str(exc))
             return
-        self.eval_data = {"y": y, "probabilities": probabilities, "data": clean}
+        self.eval_data = {
+            "y": y,
+            "probabilities": probabilities,
+            "data": clean,
+            "task_type": task_type,
+            "classes": metadata.get("classes") or [],
+        }
+        self._set_binary_controls(task_type == "binary")
         self._refresh_evaluation()
         self.notebook.select(self.tab_evaluate)
+
+    def _set_binary_controls(self, enabled: bool) -> None:
+        state = "normal" if enabled else "disabled"
+        for widget in self.threshold_widgets:
+            try:
+                widget.configure(state=state)
+            except Exception:
+                pass
 
     def _on_threshold(self, _value=None) -> None:
         value = float(self.threshold_var.get())
@@ -699,14 +748,24 @@ class ClassifierApp:
             return
         y = self.eval_data["y"]
         probabilities = self.eval_data["probabilities"]
-        threshold = float(self.threshold_var.get())
-        metrics = compute_metrics(y, probabilities, threshold)
-        positive = (self.bundle or {}).get("metadata", {}).get("positive_label", 1)
-        negative = (self.bundle or {}).get("metadata", {}).get("negative_label", 0)
-        self.eval_text.delete("1.0", "end")
-        self.eval_text.insert("1.0", format_metrics(metrics, positive_label=str(positive)))
-        self._draw_confusion(metrics, negative, positive)
-        self._draw_roc(y, probabilities)
+        metadata = (self.bundle or {}).get("metadata", {})
+        task_type = self.eval_data.get("task_type") or metadata.get("task_type", "binary")
+        if task_type == "binary":
+            threshold = float(self.threshold_var.get())
+            metrics = compute_metrics(y, probabilities, threshold)
+            positive = metadata.get("positive_label", 1)
+            negative = metadata.get("negative_label", 0)
+            self.eval_text.delete("1.0", "end")
+            self.eval_text.insert("1.0", format_metrics(metrics, positive_label=str(positive)))
+            self._draw_confusion(metrics, negative, positive)
+            self._draw_roc(y, probabilities)
+        else:
+            classes = self.eval_data.get("classes") or metadata.get("classes") or []
+            metrics = compute_multiclass_metrics(y, probabilities, classes)
+            self.eval_text.delete("1.0", "end")
+            self.eval_text.insert("1.0", format_metrics(metrics))
+            self._draw_confusion(metrics, None, None)
+            self._draw_roc(y, probabilities)
 
     def _draw_confusion(self, metrics: dict[str, Any], negative: Any, positive: Any) -> None:
         chart = self._chart("confusion")
@@ -716,8 +775,9 @@ class ClassifierApp:
         matrix = np.array(metrics["confusion_matrix"])
         axes.clear()
         axes.imshow(matrix, cmap="Blues")
-        for row in range(2):
-            for column in range(2):
+        size = matrix.shape[0]
+        for row in range(size):
+            for column in range(size):
                 axes.text(
                     column,
                     row,
@@ -727,9 +787,15 @@ class ClassifierApp:
                     color="white" if matrix[row, column] > matrix.max() / 2 else "black",
                     fontsize=12,
                 )
-        axes.set_xticks([0, 1], [f"Pred {negative}", f"Pred {positive}"])
-        axes.set_yticks([0, 1], [f"Actual {negative}", f"Actual {positive}"])
-        axes.set_title(f"Threshold {metrics['threshold']}")
+        if metrics.get("task_type") == "multiclass":
+            labels = [str(label) for label in metrics.get("classes", [])]
+            axes.set_xticks(range(size), [f"Pred {label}" for label in labels])
+            axes.set_yticks(range(size), [f"Actual {label}" for label in labels])
+            axes.set_title("Multiclass confusion matrix")
+        else:
+            axes.set_xticks([0, 1], [f"Pred {negative}", f"Pred {positive}"])
+            axes.set_yticks([0, 1], [f"Actual {negative}", f"Actual {positive}"])
+            axes.set_title(f"Threshold {metrics['threshold']}")
         figure.tight_layout()
         canvas.draw_idle()
 
@@ -739,18 +805,28 @@ class ClassifierApp:
             return
         figure, axes, canvas = chart
         axes.clear()
-        points = roc_points(y, probabilities)
-        if points is None:
-            axes.text(0.5, 0.5, "ROC needs both classes", ha="center", va="center")
+        if np.asarray(probabilities).ndim > 1:
+            axes.text(
+                0.5,
+                0.5,
+                "ROC curve is available for binary models only",
+                ha="center",
+                va="center",
+            )
             axes.set_axis_off()
         else:
-            fpr, tpr = points
-            axes.plot(fpr, tpr, color="#4c72b0", label="ROC")
-            axes.plot([0, 1], [0, 1], "--", color="gray", label="Chance")
-            axes.set_xlabel("False positive rate")
-            axes.set_ylabel("True positive rate")
-            axes.set_title("ROC curve")
-            axes.legend(loc="lower right")
+            points = roc_points(y, probabilities)
+            if points is None:
+                axes.text(0.5, 0.5, "ROC needs both classes", ha="center", va="center")
+                axes.set_axis_off()
+            else:
+                fpr, tpr = points
+                axes.plot(fpr, tpr, color="#4c72b0", label="ROC")
+                axes.plot([0, 1], [0, 1], "--", color="gray", label="Chance")
+                axes.set_xlabel("False positive rate")
+                axes.set_ylabel("True positive rate")
+                axes.set_title("ROC curve")
+                axes.legend(loc="lower right")
         figure.tight_layout()
         canvas.draw_idle()
 
@@ -807,13 +883,22 @@ class ClassifierApp:
         except Exception as exc:
             messagebox.showerror("Prediction failed", str(exc))
             return
-        self.manual_result.configure(
-            text=(
-                f"Prediction: {result['prediction']}    "
-                f"probability of {result['positive_label']}: {result['probability']:.3f}    "
-                f"threshold: {result['threshold']:.2f}"
+        if result.get("task_type") == "multiclass":
+            probabilities = "    ".join(
+                f"{label}: {probability:.3f}"
+                for label, probability in result.get("probabilities", {}).items()
             )
-        )
+            self.manual_result.configure(
+                text=f"Prediction: {result['prediction']}    {probabilities}"
+            )
+        else:
+            self.manual_result.configure(
+                text=(
+                    f"Prediction: {result['prediction']}    "
+                    f"probability of {result['positive_label']}: {result['probability']:.3f}    "
+                    f"threshold: {result['threshold']:.2f}"
+                )
+            )
 
     def load_batch_file(self) -> None:
         path = filedialog.askopenfilename(title="Open batch file", filetypes=FILE_TYPES)
@@ -900,7 +985,11 @@ class ClassifierApp:
         self.bundle = bundle
         self.result = None
         self.eval_data = None
-        self.threshold_var.set(float(bundle.get("metadata", {}).get("threshold", 0.5)))
+        metadata = bundle.get("metadata", {})
+        self.threshold_var.set(float(metadata.get("threshold", 0.5)))
+        self._set_binary_controls(
+            (metadata.get("task_type") or "binary") == "binary"
+        )
         self._on_threshold()
         self._build_manual_form()
         self._show_metadata(bundle.get("metadata", {}))
@@ -912,6 +1001,9 @@ class ClassifierApp:
         for key in (
             "created_at",
             "target",
+            "task_type",
+            "classes",
+            "class_count",
             "positive_label",
             "negative_label",
             "model_name",

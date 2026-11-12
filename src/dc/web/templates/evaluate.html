@@ -5,7 +5,7 @@
 <div class="page-header-box">
   <div class="badge bg-primary-subtle text-primary border border-primary-subtle mb-2">Langkah 4 dari 5</div>
   <h2 class="page-headline">4. Evaluasi Model (Model Evaluation)</h2>
-  <p class="page-description">Evaluasi performa metrik klasifikasi (Accuracy, F1, Precision, Recall, ROC-AUC), visualisasi Confusion Matrix, dan penyesuaian Decision Threshold.</p>
+  <p class="page-description">Evaluasi performa metrik klasifikasi (Accuracy, F1, Precision, Recall, ROC-AUC), visualisasi Confusion Matrix, serta penyesuaian Decision Threshold untuk model biner dan metrik per kelas untuk model multikelas.</p>
 </div>
 
 <!-- Active Model Bar -->
@@ -21,6 +21,15 @@
         <strong class="text-dark">{{ bundle.metadata.target if bundle.metadata else '-' }}</strong>
       </div>
       <div>
+        <span class="text-muted small">Tipe Klasifikasi:</span><br>
+        {% if task_type == 'binary' %}
+          <strong class="text-success">Biner</strong>
+        {% else %}
+          <strong class="text-primary">Multikelas ({{ classes|length }} kelas)</strong>
+        {% endif %}
+      </div>
+      {% if task_type == 'binary' %}
+      <div>
         <span class="text-muted small">Kelas Positif (1):</span><br>
         <strong class="text-success">{{ bundle.metadata.positive_label if bundle.metadata else '-' }}</strong>
       </div>
@@ -28,8 +37,10 @@
         <span class="text-muted small">Threshold Saat Ini:</span><br>
         <span class="badge bg-dark fs-6">{{ '%.2f'|format(threshold) }}</span>
       </div>
+      {% endif %}
     </div>
 
+    {% if task_type == 'binary' %}
     <!-- Threshold Slider Form -->
     <form method="post" class="p-3 border rounded bg-light">
       <div class="row g-3 align-items-center">
@@ -53,6 +64,25 @@
         </div>
       </div>
     </form>
+    {% else %}
+    <form method="post" class="p-3 border rounded bg-light">
+      <div class="row g-3 align-items-center">
+        <div class="col-md-8">
+          <div class="small text-muted mb-2">
+            Prediksi multikelas memakai probabilitas tertinggi (argmax); decision threshold tidak digunakan.
+            Kelas: {% for c in classes %}<span class="badge bg-white text-dark border me-1">{{ c }}</span>{% endfor %}
+          </div>
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" name="evaluate_on_current" id="evalcur" checked>
+            <label class="form-check-label small" for="evalcur">Evaluasi pada dataset aktif saat ini</label>
+          </div>
+        </div>
+        <div class="col-md-4">
+          <button class="btn btn-primary w-100" type="submit">Evaluasi</button>
+        </div>
+      </div>
+    </form>
+    {% endif %}
   </div>
 </div>
 
@@ -68,19 +98,19 @@
   <div class="col-6 col-md-4 col-lg-2">
     <div class="kpi-card text-center">
       <div class="kpi-value text-success">{{ '%.3f'|format(metrics.f1) }}</div>
-      <div class="kpi-title">F1-Score</div>
+      <div class="kpi-title">F1-Score{% if metrics.task_type == 'multiclass' %} (macro){% endif %}</div>
     </div>
   </div>
   <div class="col-6 col-md-4 col-lg-2">
     <div class="kpi-card text-center">
       <div class="kpi-value text-info">{{ '%.3f'|format(metrics.precision) }}</div>
-      <div class="kpi-title">Precision</div>
+      <div class="kpi-title">Precision{% if metrics.task_type == 'multiclass' %} (macro){% endif %}</div>
     </div>
   </div>
   <div class="col-6 col-md-4 col-lg-2">
     <div class="kpi-card text-center">
       <div class="kpi-value text-warning">{{ '%.3f'|format(metrics.recall) }}</div>
-      <div class="kpi-title">Recall</div>
+      <div class="kpi-title">Recall{% if metrics.task_type == 'multiclass' %} (macro){% endif %}</div>
     </div>
   </div>
   <div class="col-6 col-md-4 col-lg-2">
@@ -88,7 +118,7 @@
       <div class="kpi-value text-purple" style="color: #6366f1;">
         {% if metrics.roc_auc is not none %}{{ '%.3f'|format(metrics.roc_auc) }}{% else %}N/A{% endif %}
       </div>
-      <div class="kpi-title">ROC-AUC</div>
+      <div class="kpi-title">ROC-AUC{% if metrics.task_type == 'multiclass' %} (OvR){% endif %}</div>
     </div>
   </div>
   <div class="col-6 col-md-4 col-lg-2">
@@ -106,9 +136,10 @@
   <div class="col-lg-7">
     <div class="card h-100">
       <div class="card-header">
-        Confusion Matrix (Threshold: {{ '%.2f'|format(metrics.threshold) }})
+        Confusion Matrix{% if metrics.task_type == 'binary' %} (Threshold: {{ '%.2f'|format(metrics.threshold) }}){% endif %}
       </div>
       <div class="card-body">
+        {% if metrics.task_type == 'binary' %}
         <div class="matrix-grid">
           <div class="matrix-cell cell-tn">
             <div class="matrix-num">{{ metrics.confusion_matrix[0][0] }}</div>
@@ -131,11 +162,34 @@
             <div class="text-muted small" style="font-size: 0.7rem;">Aktual: 1 &bull; Prediksi: 1</div>
           </div>
         </div>
-
         <div class="d-flex justify-content-center gap-3 mt-3 text-muted small">
           <span><span class="badge bg-success-subtle text-success border border-success me-1">Hijau</span> Tebakan Benar</span>
           <span><span class="badge bg-danger-subtle text-danger border border-danger me-1">Merah</span> Salah Tebak</span>
         </div>
+        {% else %}
+        <div class="table-responsive">
+          <table class="table table-bordered table-sm text-center mb-0">
+            <thead>
+              <tr>
+                <th class="text-start">Aktual \ Prediksi</th>
+                {% for label in metrics.classes %}<th>{{ label }}</th>{% endfor %}
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in metrics.confusion_matrix %}
+              {% set row_index = loop.index0 %}
+              <tr>
+                <th class="text-start">{{ metrics.classes[row_index] }}</th>
+                {% for value in row %}
+                <td class="{% if loop.index0 == row_index %}table-success fw-bold{% endif %}">{{ value }}</td>
+                {% endfor %}
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <div class="text-muted small mt-2">Baris = kelas aktual, kolom = kelas prediksi. Sel hijau adalah prediksi benar.</div>
+        {% endif %}
       </div>
     </div>
   </div>
@@ -146,6 +200,7 @@
         Distribusi Data (Support)
       </div>
       <div class="card-body">
+        {% if metrics.task_type == 'binary' %}
         <div class="mb-3">
           <span class="small fw-bold text-secondary d-block mb-2">Ground Truth (Sebenarnya):</span>
           <div class="d-flex justify-content-between p-2 border rounded bg-light mb-2">
@@ -157,7 +212,6 @@
             <strong class="text-primary">{{ metrics.support.positive }} baris</strong>
           </div>
         </div>
-
         <div>
           <span class="small fw-bold text-secondary d-block mb-2">Predicted (Hasil Tebakan):</span>
           <div class="d-flex justify-content-between p-2 border rounded bg-light mb-2">
@@ -169,10 +223,62 @@
             <strong class="text-primary">{{ metrics.predicted.positive }} baris</strong>
           </div>
         </div>
+        {% else %}
+        <div class="table-responsive">
+          <table class="table table-sm mb-0">
+            <thead>
+              <tr><th>Kelas</th><th class="text-end">Aktual</th><th class="text-end">Prediksi</th></tr>
+            </thead>
+            <tbody>
+              {% for item in metrics.per_class %}
+              <tr>
+                <td>{{ item.label }}</td>
+                <td class="text-end">{{ item.support }}</td>
+                <td class="text-end">{{ item.predicted }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% endif %}
       </div>
     </div>
   </div>
 </div>
+
+{% if metrics.task_type == 'multiclass' %}
+<div class="card mb-4">
+  <div class="card-header">Metrik Per Kelas</div>
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-striped mb-0">
+        <thead>
+          <tr>
+            <th>Kelas</th>
+            <th class="text-end">Precision</th>
+            <th class="text-end">Recall</th>
+            <th class="text-end">F1</th>
+            <th class="text-end">Support</th>
+            <th class="text-end">Predicted</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in metrics.per_class %}
+          <tr>
+            <td class="fw-semibold">{{ item.label }}</td>
+            <td class="text-end">{{ '%.4f'|format(item.precision) }}</td>
+            <td class="text-end">{{ '%.4f'|format(item.recall) }}</td>
+            <td class="text-end">{{ '%.4f'|format(item.f1) }}</td>
+            <td class="text-end">{{ item.support }}</td>
+            <td class="text-end">{{ item.predicted }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endif %}
 {% endif %}
 
 <div class="d-flex justify-content-between align-items-center">

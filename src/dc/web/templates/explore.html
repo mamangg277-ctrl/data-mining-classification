@@ -20,7 +20,7 @@
           <option value="">-- Tanpa target (hanya struktur kolom) --</option>
           {% for col in info.schema %}
             <option value="{{ col.name }}" {% if target==col.name %}selected{% endif %}>
-              {{ col.name }} {% if col.unique == 2 %}(Rekomendasi Biner){% endif %}
+              {{ col.name }}{% if col.unique == 2 %} (Rekomendasi Biner){% elif col.unique <= 20 %} ({{ col.unique }} kelas){% endif %}
             </option>
           {% endfor %}
         </select>

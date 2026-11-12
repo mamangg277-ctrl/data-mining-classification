@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "dataclassifier"
 version = "0.1.0"
-description = "Desktop and CLI tool for binary data classification"
+description = "Desktop, web, and CLI tool for binary and multiclass data classification"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

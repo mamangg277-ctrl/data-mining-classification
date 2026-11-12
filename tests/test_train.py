@@ -74,9 +74,42 @@ def test_save_and_load_bundle(binary_frame, tmp_path):
     assert "probability_True" in scored.columns
 
 
-def test_non_binary_target_raises(binary_frame):
-    with pytest.raises(ValueError, match="exactly 2 classes"):
-        train_model(binary_frame, build_config(target="income"))
+def test_single_class_target_raises(binary_frame):
+    frame = binary_frame.copy()
+    frame["approved"] = True
+    with pytest.raises(ValueError, match="at least 2 classes"):
+        train_model(frame, build_config())
+
+
+def test_train_multiclass_model(multiclass_frame):
+    result = train_model(
+        multiclass_frame,
+        build_config(target="risk", models=["logistic", "dummy"]),
+    )
+    assert result.metadata["task_type"] == "multiclass"
+    assert result.metadata["class_count"] == 3
+    assert set(result.metadata["classes"]) == {"high", "low", "medium"}
+    assert result.test_metrics["task_type"] == "multiclass"
+    assert len(result.test_metrics["per_class"]) == 3
+    assert len(result.test_metrics["confusion_matrix"]) == 3
+    assert len(result.y_test) == len(result.y_proba)
+    assert result.y_proba.ndim == 2
+
+    bundle = {"pipeline": result.pipeline, "metadata": result.metadata}
+    scored = predict_frame(bundle, multiclass_frame)
+    assert set(scored["prediction"]).issubset(set(result.metadata["classes"]))
+    for label in result.metadata["classes"]:
+        assert f"probability_{label}" in scored.columns
+    record = {
+        "age": "41",
+        "income": "6400",
+        "debt_ratio": "0.25",
+        "region": "north",
+    }
+    output = predict_record(bundle, record)
+    assert output["task_type"] == "multiclass"
+    assert output["prediction"] in result.metadata["classes"]
+    assert set(output["probabilities"]) == set(result.metadata["classes"])
 
 
 def test_predict_record_threshold_extremes(binary_frame):

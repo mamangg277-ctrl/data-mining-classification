@@ -8,15 +8,15 @@ from rich.console import Console
 from rich.table import Table
 
 from dc.eda import inspect_dataframe, save_report
-from dc.evaluate import compute_metrics, format_metrics
+from dc.evaluate import compute_metrics, compute_multiclass_metrics, format_metrics
 from dc.io import load_dataframe
 from dc.models import MODEL_LABELS
-from dc.predict import predict_file, predict_probabilities
-from dc.train import TrainConfig, load_bundle, save_result, train_model
+from dc.predict import predict_file, predict_proba_matrix, predict_probabilities
+from dc.train import TrainConfig, encode_target_values, load_bundle, save_result, train_model
 
 app = typer.Typer(
     name="dc",
-    help="Train and use binary classification models on CSV, Excel, or JSON data.",
+    help="Train and use binary or multiclass classification models on CSV, Excel, or JSON data.",
     no_args_is_help=True,
     add_completion=False,
 )
@@ -56,15 +56,15 @@ def inspect(
         None, "--report", "-r", help="Base path for markdown/JSON inspection reports."
     ),
 ) -> None:
-    """Inspect a dataset and suggest binary target columns."""
+    """Inspect a dataset and suggest classification target columns."""
     frame = load_dataframe(path)
     info = inspect_dataframe(frame, target)
     console.print(f"[bold]Rows:[/bold] {info['rows']}  [bold]Columns:[/bold] {info['columns']}")
     console.print(f"[bold]Duplicate rows:[/bold] {info['duplicate_rows']}")
     console.print(f"[bold]Missing cells:[/bold] {info['total_missing']}")
-    candidates = info.get("binary_target_candidates", [])
+    candidates = info.get("classification_target_candidates", [])
     if candidates:
-        console.print(f"[bold]Binary target candidates:[/bold] {', '.join(candidates)}")
+        console.print(f"[bold]Classification target candidates:[/bold] {', '.join(candidates)}")
     schema = Table(title="Columns")
     for column in ("Column", "Type", "Kind", "Missing %", "Unique"):
         schema.add_column(column)
@@ -93,9 +93,9 @@ def inspect(
 @app.command()
 def train(
     path: Path = typer.Argument(..., help="CSV, XLSX, or JSON training data."),
-    target: str = typer.Option(..., "--target", "-t", help="Binary target column."),
+    target: str = typer.Option(..., "--target", "-t", help="Target column with 2+ classes."),
     positive_label: str | None = typer.Option(
-        None, "--positive", "-p", help="Value treated as the positive class."
+        None, "--positive", "-p", help="Value treated as the positive class (binary targets only)."
     ),
     output: Path = typer.Option(
         Path("models/model.joblib"), "--output", "-o", help="Where to save the trained model."
@@ -114,7 +114,7 @@ def train(
     n_iter: int = typer.Option(15, "--n-iter", min=1, max=200, help="Search iterations per model."),
     scoring: str = typer.Option("f1_macro", "--scoring", help="Cross-validation metric."),
 ) -> None:
-    """Train and compare binary classifiers, then save the best pipeline."""
+    """Train and compare classifiers, then save the best pipeline."""
     frame = load_dataframe(path)
     config = TrainConfig(
         target=target,
@@ -145,10 +145,11 @@ def train(
     for warning in result.warnings:
         console.print(f"[yellow]Warning:[/yellow] {warning}")
     console.print(f"[bold]Best model:[/bold] {MODEL_LABELS.get(result.model_name, result.model_name)}")
+    positive = result.metadata.get("positive_label")
     console.print(
         format_metrics(
             result.test_metrics,
-            positive_label=str(result.metadata["positive_label"]),
+            positive_label=str(positive) if positive is not None else "positive",
         )
     )
     saved = save_result(result, output)
@@ -175,15 +176,30 @@ def evaluate(
     if target_column not in frame.columns:
         raise typer.BadParameter(f"Target column '{target_column}' not found in {path}.")
     clean = frame.dropna(subset=[target_column])
-    positive = metadata.get("positive_label", 1)
-    y = clean[target_column].map(
-        lambda value: 1 if (value == positive or str(value) == str(positive)) else 0
-    ).to_numpy()
-    probabilities = predict_probabilities(bundle, clean)
-    chosen_threshold = threshold if threshold is not None else metadata.get("threshold", 0.5)
-    metrics = compute_metrics(y, probabilities, chosen_threshold)
+    task_type = metadata.get("task_type") or (
+        "binary" if metadata.get("positive_label") is not None else "multiclass"
+    )
+    if task_type == "binary":
+        positive = metadata.get("positive_label", 1)
+        y = clean[target_column].map(
+            lambda value: 1 if (value == positive or str(value) == str(positive)) else 0
+        ).to_numpy()
+        probabilities = predict_probabilities(bundle, clean)
+        chosen_threshold = threshold if threshold is not None else metadata.get("threshold", 0.5)
+        metrics = compute_metrics(y, probabilities, chosen_threshold)
+    else:
+        classes = metadata.get("classes") or []
+        if not classes:
+            raise typer.BadParameter("Model metadata is missing the class labels.")
+        y = encode_target_values(clean[target_column], classes)
+        probabilities = predict_proba_matrix(bundle, clean)
+        metrics = compute_multiclass_metrics(y, probabilities, classes)
+    positive = metadata.get("positive_label")
     console.print(
-        format_metrics(metrics, positive_label=str(metadata.get("positive_label", "positive")))
+        format_metrics(
+            metrics,
+            positive_label=str(positive) if positive is not None else "positive",
+        )
     )
 
 

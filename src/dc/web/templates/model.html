@@ -17,7 +17,15 @@
     <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
       <div>
         <strong class="fs-5">{{ bundle.metadata.model_label }}</strong> <code>({{ bundle.metadata.model_name }})</code><br>
-        <span class="text-muted small">Target: {{ bundle.metadata.target }} | Positive: {{ bundle.metadata.positive_label }} | Fitur: {{ bundle.metadata.feature_columns|length }} kolom</span>
+        <span class="text-muted small">
+          Target: {{ bundle.metadata.target }}
+          {% if bundle.metadata.task_type == 'multiclass' %}
+            | Multikelas: {{ bundle.metadata.classes|join(', ') }}
+          {% else %}
+            | Positive: {{ bundle.metadata.positive_label }}
+          {% endif %}
+          | Fitur: {{ bundle.metadata.feature_columns|length }} kolom
+        </span>
       </div>
       <div class="d-flex gap-2">
         <a href="{{ url_for('evaluate_page') }}" class="btn btn-sm btn-outline-secondary">Evaluate</a>

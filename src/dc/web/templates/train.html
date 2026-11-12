@@ -20,17 +20,17 @@
             <select class="form-select" name="target" id="targetSelect" required>
               {% for col in columns %}
                 <option value="{{ col }}" {% if col == selected_target %}selected{% endif %}>
-                  {{ col }}{% if col in binary_columns %} (Biner){% endif %}
+                  {{ col }}{% if col in class_counts %} ({{ class_counts[col] }} kelas){% endif %}
                 </option>
               {% endfor %}
             </select>
-            <div class="text-muted small mt-1">Kolom yang memiliki tepat 2 kelas untuk diprediksi.</div>
+            <div class="text-muted small mt-1">Kolom target dengan 2 kelas (biner) atau lebih (multikelas).</div>
           </div>
 
-          <div class="col-md-6">
-            <label class="form-label">Positive Class (Opsional)</label>
+          <div class="col-md-6" id="positiveClassWrap">
+            <label class="form-label">Positive Class (Opsional, Biner)</label>
             <input class="form-control" name="positive_label" placeholder="Contoh: 1, True, Yes, dsb.">
-            <div class="text-muted small mt-1">Biarkan kosong untuk penentuan otomatis.</div>
+            <div class="text-muted small mt-1">Hanya berlaku untuk target 2 kelas. Biarkan kosong untuk penentuan otomatis.</div>
           </div>
         </div>
 
@@ -160,6 +160,15 @@
   var checkboxes = Array.prototype.slice.call(document.querySelectorAll('.exclude-col'));
   var selectAllBtn = document.getElementById('excludeSelectAll');
   var clearAllBtn = document.getElementById('excludeClearAll');
+  var classCounts = {{ class_counts|tojson }};
+  var positiveWrap = document.getElementById('positiveClassWrap');
+
+  function syncTargetMode() {
+    var target = targetSelect ? targetSelect.value : null;
+    if (positiveWrap) {
+      positiveWrap.style.display = classCounts[target] === 2 ? '' : 'none';
+    }
+  }
 
   function syncTargetCheckbox() {
     var target = targetSelect ? targetSelect.value : null;
@@ -174,8 +183,12 @@
   }
 
   if (targetSelect) {
-    targetSelect.addEventListener('change', syncTargetCheckbox);
+    targetSelect.addEventListener('change', function () {
+      syncTargetCheckbox();
+      syncTargetMode();
+    });
     syncTargetCheckbox();
+    syncTargetMode();
   }
   if (selectAllBtn) {
     selectAllBtn.addEventListener('click', function () {

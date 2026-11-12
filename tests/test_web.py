@@ -255,7 +255,7 @@ def test_train_page_rejects_non_binary_target(tmp_path):
     )
     assert response.status_code == 200
     html = response.get_data(as_text=True)
-    assert "binary classification needs exactly 2" in html
+    assert "classification needs between 2 and 20" in html
     assert "approved" in html
 
 
@@ -425,3 +425,67 @@ def test_upload_keeps_session_cookie_small(storage_dirs, tmp_path):
         assert "current_shape" not in session
         assert session["current_file"]
 
+
+
+def test_multiclass_train_evaluate_and_predict(storage_dirs, multiclass_frame, tmp_path):
+    data_path = tmp_path / "data.csv"
+    multiclass_frame.to_csv(data_path, index=False)
+
+    client = app.test_client()
+    with client.session_transaction() as session:
+        session["current_file"] = str(data_path)
+
+    response = client.get("/train")
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert "risk" in html
+    assert "3 kelas" in html
+
+    response = client.post(
+        "/train",
+        data={
+            "target": "risk",
+            "test_size": "0.2",
+            "cv_folds": "3",
+            "seed": "42",
+            "scoring": "f1_macro",
+            "models": ["logistic"],
+        },
+    )
+    assert response.status_code == 200
+    assert "Training..." in response.get_data(as_text=True)
+
+    result = train_model(
+        multiclass_frame,
+        TrainConfig(target="risk", models=["logistic"], cv_folds=3, seed=7),
+    )
+    model_path = save_result(result, storage_dirs["models"] / "multiclass.joblib")
+    with client.session_transaction() as session:
+        session["current_model_path"] = str(model_path)
+        session["current_file"] = str(data_path)
+
+    response = client.post("/evaluate", data={"evaluate_on_current": "on"})
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert "Metrik Per Kelas" in html
+    assert "Multikelas" in html
+
+    response = client.get("/predict")
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert "argmax" in html or "Kelas:" in html
+
+    response = client.post(
+        "/predict",
+        data={
+            "mode": "manual",
+            "age": "41",
+            "income": "6400",
+            "debt_ratio": "0.25",
+            "region": "north",
+        },
+    )
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert "Hasil Prediksi" in html
+    assert "terpilih" in html
