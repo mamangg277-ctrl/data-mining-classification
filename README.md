@@ -83,6 +83,13 @@ dc --help
 6. **Tab History & Storage:**
    * Pantau riwayat analisis dan kelola ruang penyimpanan lokal.
 
+########################
+Link Kaggle yang dapat digunakan untuk menguji pengklasifikasian
+https://www.kaggle.com/datasets/fatemehmehrparvar/obesity-levels
+
+Link Folder Google Drive
+https://drive.google.com/drive/folders/17B97DEmeMwzQtWqhkix3UnUhbwKMAmus?usp=sharing 
+
 ---
 
 ## 🛠️ Tech Stack
