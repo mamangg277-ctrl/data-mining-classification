@@ -49,6 +49,12 @@ def inspect_dataframe(frame: pd.DataFrame, target: str | None = None) -> dict[st
     return info
 
 
+def remove_duplicate_rows(frame: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    """Return a frame without exact duplicate rows and the number removed."""
+    cleaned = frame.drop_duplicates().reset_index(drop=True)
+    return cleaned, int(len(frame) - len(cleaned))
+
+
 def _to_python(value: Any) -> Any:
     if hasattr(value, "item"):
         try:

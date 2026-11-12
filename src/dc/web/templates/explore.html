@@ -65,6 +65,19 @@
   </div>
 </div>
 
+{% if info.duplicate_rows > 0 %}
+<div class="alert alert-warning d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4 border-0 shadow-sm">
+  <div class="small">
+    <strong>{{ info.duplicate_rows }} baris duplikat terdeteksi.</strong>
+    Hapus duplikat untuk membuat salinan dataset bersih. File asli tetap tersimpan.
+  </div>
+  <form method="post" action="{{ url_for('deduplicate') }}" class="m-0"
+        onsubmit="return confirm('Hapus {{ info.duplicate_rows }} baris duplikat? Salinan bersih akan dibuat dan file asli tetap tersimpan.');">
+    <button type="submit" class="btn btn-sm btn-warning fw-semibold">Hapus Baris Duplikat</button>
+  </form>
+</div>
+{% endif %}
+
 {% if info.target %}
 <!-- Class Distribution Breakdown -->
 <div class="card mb-4">

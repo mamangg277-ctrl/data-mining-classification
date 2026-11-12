@@ -592,6 +592,53 @@ def test_upload_keeps_session_cookie_small(storage_dirs, tmp_path):
         assert session["current_file"]
 
 
+def test_explore_deduplicate_creates_clean_copy(storage_dirs):
+    frame = pd.DataFrame(
+        {
+            "age": [21, 21, 34, 47, 47],
+            "region": ["north", "north", "south", "east", "east"],
+            "approved": [1, 1, 0, 1, 1],
+        }
+    )
+    original = storage_dirs["uploads"] / "20260101_000000_data.csv"
+    frame.to_csv(original, index=False)
+
+    client = app.test_client()
+    with client.session_transaction() as session:
+        session["current_file"] = str(original)
+        session["target"] = "approved"
+
+    response = client.post("/explore/deduplicate")
+
+    assert response.status_code == 302
+    cleaned_paths = list(storage_dirs["uploads"].glob("*_data_dedup.csv"))
+    assert len(cleaned_paths) == 1
+    cleaned = pd.read_csv(cleaned_paths[0])
+    assert len(cleaned) == 3
+    assert original.exists()
+    with client.session_transaction() as session:
+        assert Path(session["current_file"]) == cleaned_paths[0]
+        assert session["target"] == "approved"
+    assert list(storage_dirs["reports"].glob("inspection_*.json"))
+
+
+def test_explore_deduplicate_noop_when_no_duplicates(storage_dirs):
+    frame = pd.DataFrame({"age": [21, 34, 47], "approved": [0, 1, 0]})
+    original = storage_dirs["uploads"] / "unique.csv"
+    frame.to_csv(original, index=False)
+
+    client = app.test_client()
+    with client.session_transaction() as session:
+        session["current_file"] = str(original)
+        session["target"] = "approved"
+
+    response = client.post("/explore/deduplicate")
+
+    assert response.status_code == 302
+    assert not list(storage_dirs["uploads"].glob("*_dedup*"))
+    with client.session_transaction() as session:
+        assert Path(session["current_file"]) == original
+
 
 def test_multiclass_train_evaluate_and_predict(storage_dirs, multiclass_frame, tmp_path):
     data_path = tmp_path / "data.csv"

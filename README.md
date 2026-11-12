@@ -69,6 +69,7 @@ dc --help
    * Pilih kolom target klasifikasi: 2 kelas (biner) atau lebih (multikelas).
 2. **Tab Explore (EDA):**
    * Periksa statistik deskriptif, missing values, dan distribusi kelas target. Laporan tersimpan otomatis di `reports/`.
+   * Jika terdeteksi baris duplikat, klik **Hapus Baris Duplikat** untuk membuat salinan dataset bersih dan menjadikannya dataset aktif. File asli tetap tersimpan di `data/uploads/`.
 3. **Tab Train:**
    * Atur rasio test size, k-fold cross validation, dan pilih algoritma (*Logistic Regression*, *Random Forest*, *Gradient Boosting*).
    * Klik **Train Model** (proses training berjalan di background).
@@ -83,12 +84,10 @@ dc --help
 6. **Tab History & Storage:**
    * Pantau riwayat analisis dan kelola ruang penyimpanan lokal.
 
-########################
-Link Kaggle yang dapat digunakan untuk menguji pengklasifikasian
-https://www.kaggle.com/datasets/fatemehmehrparvar/obesity-levels
 
-Link Folder Google Drive
-https://drive.google.com/drive/folders/17B97DEmeMwzQtWqhkix3UnUhbwKMAmus?usp=sharing 
+* Link Kaggle yang dapat digunakan untuk menguji pengklasifikasian https://www.kaggle.com/datasets/fatemehmehrparvar/obesity-levels
+
+* Link Folder Google Drive https://drive.google.com/drive/folders/17B97DEmeMwzQtWqhkix3UnUhbwKMAmus?usp=sharing 
 
 ---
 

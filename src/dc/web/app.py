@@ -28,9 +28,10 @@ from flask import (
 )
 from werkzeug.utils import secure_filename
 
-from dc.eda import inspect_dataframe, save_report
+from dc.eda import inspect_dataframe, remove_duplicate_rows, save_report
 from dc.evaluate import compute_metrics, compute_multiclass_metrics
 from dc.io import (
+    SUPPORTED_EXTENSIONS,
     feature_value_options,
     find_binary_targets,
     find_classification_targets,
@@ -668,6 +669,34 @@ def upload():
     )
 
 
+def _inspect_and_save(frame: pd.DataFrame, path: Path, target: str | None) -> dict[str, Any]:
+    info = inspect_dataframe(frame, target)
+    try:
+        base_path = REPORTS_DIR / f"inspection_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.md"
+        markdown_path, json_path = save_report(info, str(base_path.with_suffix("")))
+        conn = get_db()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO inspections (id, data_file, target, report_md, report_json, summary_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    str(uuid.uuid4()),
+                    str(path),
+                    target,
+                    str(markdown_path),
+                    str(json_path),
+                    json.dumps(info),
+                    datetime.now().isoformat(),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+    return info
+
+
 @app.route("/explore", methods=["GET", "POST"])
 def explore():
     path = _get_active_file_path()
@@ -683,32 +712,58 @@ def explore():
     target = request.form.get("target") or session.get("target")
     if not target or target not in frame.columns:
         target = choose_default_target(frame)
-    info = inspect_dataframe(frame, target)
     if target:
         session["target"] = target
-    # save inspection
-    try:
-        md_path = REPORTS_DIR / f"inspection_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
-        json_path, _ = save_report(info, str(md_path.with_suffix("")))
-        conn = get_db()
-        cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO inspections (id, data_file, target, report_md, report_json, summary_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (
-                str(uuid.uuid4()),
-                str(path),
-                target,
-                str(md_path),
-                str(json_path),
-                json.dumps(info),
-                datetime.now().isoformat(),
-            ),
-        )
-        conn.commit()
-        conn.close()
-    except Exception:
-        pass
+    info = _inspect_and_save(frame, path, target)
     return render_template("explore.html", info=info, target=target, model_labels=MODEL_LABELS)
+
+
+@app.route("/explore/deduplicate", methods=["POST"])
+def deduplicate():
+    path = _get_active_file_path()
+    if not path or not path.is_file():
+        flash("Silakan upload atau pilih file data terlebih dahulu.", "info")
+        return redirect(url_for("data_page"))
+    try:
+        frame = load_dataframe(str(path))
+    except Exception as e:
+        flash(f"Gagal memuat dataset: {e}", "error")
+        return redirect(url_for("data_page"))
+
+    cleaned, removed = remove_duplicate_rows(frame)
+    if removed == 0:
+        flash("Tidak ada baris duplikat yang perlu dihapus.", "info")
+        return redirect(url_for("explore"))
+
+    target = session.get("target")
+    if not target or target not in cleaned.columns:
+        target = choose_default_target(cleaned)
+    suffix = path.suffix.lower()
+    if suffix not in SUPPORTED_EXTENSIONS:
+        suffix = ".csv"
+    stem = secure_filename(path.stem) or "dataset"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_path = UPLOAD_DIR / f"{timestamp}_{stem}_dedup{suffix}"
+    counter = 1
+    while output_path.exists():
+        output_path = UPLOAD_DIR / f"{timestamp}_{stem}_dedup_{counter}{suffix}"
+        counter += 1
+    try:
+        saved_path = save_dataframe(cleaned, str(output_path))
+    except Exception as e:
+        flash(f"Gagal menyimpan dataset bersih: {e}", "error")
+        return redirect(url_for("explore"))
+
+    session["current_file"] = str(saved_path)
+    if target:
+        session["target"] = target
+    _inspect_and_save(cleaned, saved_path, target)
+    flash(
+        f"Menghapus {removed} baris duplikat. Dataset bersih disimpan sebagai "
+        f"{saved_path.name}; file asli tetap tersimpan.",
+        "success",
+    )
+    return redirect(url_for("explore"))
 
 
 @app.route("/train", methods=["GET", "POST"])
