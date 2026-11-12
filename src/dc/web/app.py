@@ -58,10 +58,14 @@ app = Flask(__name__, template_folder="templates", static_folder="static")
 app.secret_key = os.environ.get("DC_SECRET_KEY") or "dataclassifier-dev-key-change-in-production"
 app.config["MAX_CONTENT_LENGTH"] = 256 * 1024 * 1024  # 256MB
 
-UPLOAD_DIR = Path(os.environ.get("DC_UPLOAD_DIR", Path("data") / "uploads"))
-MODELS_DIR = Path(os.environ.get("DC_MODELS_DIR", "models"))
-REPORTS_DIR = Path(os.environ.get("DC_REPORTS_DIR", "reports"))
-DB_PATH = Path(os.environ.get("DC_DB_PATH", Path(".web_data") / "history.db"))
+def _workspace_path(value: str | Path) -> Path:
+    return Path(value).expanduser().resolve()
+
+
+UPLOAD_DIR = _workspace_path(os.environ.get("DC_UPLOAD_DIR", Path("data") / "uploads"))
+MODELS_DIR = _workspace_path(os.environ.get("DC_MODELS_DIR", "models"))
+REPORTS_DIR = _workspace_path(os.environ.get("DC_REPORTS_DIR", "reports"))
+DB_PATH = _workspace_path(os.environ.get("DC_DB_PATH", Path(".web_data") / "history.db"))
 for _directory in (UPLOAD_DIR, MODELS_DIR, REPORTS_DIR, DB_PATH.parent):
     _directory.mkdir(parents=True, exist_ok=True)
 
@@ -145,6 +149,17 @@ def init_db():
             created_at TEXT NOT NULL,
             result_json TEXT,
             FOREIGN KEY(run_id) REFERENCES runs(id)
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS manual_predictions (
+            id TEXT PRIMARY KEY,
+            model_path TEXT,
+            inputs_json TEXT,
+            result_json TEXT,
+            created_at TEXT NOT NULL
         )
         """
     )
@@ -456,6 +471,10 @@ def delete_model(name: str | None) -> bool:
             if output_path is not None:
                 _remove_file(output_path)
         cur.execute(f"DELETE FROM predictions WHERE model_path IN ({placeholders})", variants)
+        cur.execute(
+            f"DELETE FROM manual_predictions WHERE model_path IN ({placeholders})",
+            variants,
+        )
         cur.execute(f"DELETE FROM runs WHERE model_path IN ({placeholders})", variants)
         conn.commit()
     finally:
@@ -518,6 +537,7 @@ def clear_models() -> int:
             if output_path is not None:
                 _remove_file(output_path)
         cur.execute("DELETE FROM predictions")
+        cur.execute("DELETE FROM manual_predictions")
         cur.execute("DELETE FROM runs")
         conn.commit()
     finally:
@@ -554,6 +574,7 @@ def clear_history() -> None:
         cur = conn.cursor()
         cur.execute("DELETE FROM runs")
         cur.execute("DELETE FROM predictions")
+        cur.execute("DELETE FROM manual_predictions")
         cur.execute("DELETE FROM inspections")
         conn.commit()
         try:
@@ -951,6 +972,59 @@ def _example_record(frame: pd.DataFrame, features: list[str], target: str | None
     return result
 
 
+def save_manual_prediction(
+    model_path: str | None,
+    record: dict[str, Any],
+    result: dict[str, Any],
+) -> None:
+    conn = get_db()
+    try:
+        conn.execute(
+            "INSERT INTO manual_predictions (id, model_path, inputs_json, result_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                str(uuid.uuid4()),
+                model_path,
+                json.dumps(record, default=str),
+                json.dumps(result, default=str),
+                datetime.now().isoformat(),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_recent_manual_predictions(
+    model_path: str | None,
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT inputs_json, result_json, created_at FROM manual_predictions "
+            "WHERE model_path = ? ORDER BY created_at DESC LIMIT ?",
+            (model_path, limit),
+        ).fetchall()
+    finally:
+        conn.close()
+    entries = []
+    for row in rows:
+        try:
+            inputs = json.loads(row["inputs_json"] or "{}")
+            result = json.loads(row["result_json"] or "{}")
+        except (TypeError, ValueError):
+            continue
+        entries.append(
+            {
+                "inputs": inputs,
+                "result": result,
+                "created_at": row["created_at"],
+            }
+        )
+    return entries
+
+
 @app.route("/predict", methods=["GET", "POST"])
 def predict_page():
     bundle = _load_current_bundle()
@@ -987,6 +1061,7 @@ def predict_page():
         else None
     )
     numeric_features = _numeric_feature_names(metadata, features)
+    model_path = session.get("current_model_path")
     result = None
     if request.method == "POST" and request.form.get("mode") == "manual":
         record = {}
@@ -996,12 +1071,16 @@ def predict_page():
             result = predict_record(bundle, record, threshold=threshold)
         except Exception as e:
             flash(f"Prediction failed: {e}", "error")
+        else:
+            save_manual_prediction(model_path, record, result)
+    recent_predictions = get_recent_manual_predictions(model_path)
     return render_template(
         "predict.html",
         bundle=bundle,
         features=features,
         threshold=threshold,
         result=result,
+        recent_predictions=recent_predictions,
         feature_values=feature_values,
         numeric_features=numeric_features,
         example=example,
@@ -1031,17 +1110,20 @@ def predict_batch():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     saved_name = f"batch_{timestamp}_{filename}"
     path = UPLOAD_DIR / saved_name
-    f.save(path)
-    frame = load_dataframe(str(path))
     threshold = float(session.get("threshold", bundle.get("metadata", {}).get("threshold", 0.5)))
     try:
+        f.save(path)
+        frame = load_dataframe(str(path))
         out = predict_frame(bundle, frame, threshold=threshold)
     except Exception as e:
         flash(f"Batch prediction failed: {e}", "error")
         return redirect(url_for("predict_page"))
     out_path = REPORTS_DIR / f"predictions_{timestamp}.csv"
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    save_dataframe(out, str(out_path))
+    try:
+        save_dataframe(out, str(out_path))
+    except Exception as e:
+        flash(f"Could not save batch prediction: {e}", "error")
+        return redirect(url_for("predict_page"))
     conn = get_db()
     cur = conn.cursor()
     cur.execute(
@@ -1050,15 +1132,81 @@ def predict_batch():
     )
     conn.commit()
     conn.close()
-    return send_file(str(out_path), as_attachment=True, download_name=out_path.name)
+    return send_file(str(out_path.resolve()), as_attachment=True, download_name=out_path.name)
+
+
+def _read_model_metadata(path: Path) -> dict[str, Any]:
+    sidecar = path.with_suffix(".json")
+    if not sidecar.exists():
+        return {}
+    try:
+        data = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _model_task_type(metadata: dict[str, Any]) -> str | None:
+    task_type = metadata.get("task_type")
+    if task_type in {"binary", "multiclass"}:
+        return str(task_type)
+    classes = metadata.get("classes") or []
+    if metadata.get("positive_label") is not None or len(classes) == 2:
+        return "binary"
+    if len(classes) > 2:
+        return "multiclass"
+    return None
+
+
+def _as_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _model_entry(path: Path) -> dict[str, Any]:
+    metadata = _read_model_metadata(path)
+    metrics = metadata.get("test_metrics") or {}
+    classes = metadata.get("classes") or []
+    feature_columns = metadata.get("feature_columns") or []
+    performance = _as_float(metrics.get("f1"))
+    if performance is None:
+        performance = _as_float(metrics.get("accuracy"))
+    return {
+        "path": str(path),
+        "name": path.name,
+        "mtime": datetime.fromtimestamp(path.stat().st_mtime).isoformat(),
+        "metadata": metadata,
+        "has_metadata": bool(metadata),
+        "target": metadata.get("target"),
+        "task_type": _model_task_type(metadata),
+        "model_label": metadata.get("model_label") or metadata.get("model_name"),
+        "model_name": metadata.get("model_name"),
+        "classes": classes,
+        "class_count": metadata.get("class_count") or (len(classes) if classes else None),
+        "positive_label": metadata.get("positive_label"),
+        "threshold": metadata.get("threshold"),
+        "feature_columns": feature_columns,
+        "feature_count": len(feature_columns),
+        "rows": metadata.get("rows"),
+        "scoring": metadata.get("scoring"),
+        "cv_folds": metadata.get("cv_folds"),
+        "created_at": metadata.get("created_at"),
+        "performance": performance,
+        "roc_auc": _as_float(metrics.get("roc_auc")),
+        "metrics": metrics,
+        "leaderboard": metadata.get("leaderboard") or [],
+        "warnings": metadata.get("warnings") or [],
+        "bundle_version": metadata.get("bundle_version"),
+        "seed": metadata.get("seed"),
+    }
 
 
 @app.route("/model")
 def model_page():
     bundle = _load_current_bundle()
-    models = []
-    for p in MODELS_DIR.glob("*.joblib"):
-        models.append({"path": str(p), "name": p.name, "mtime": datetime.fromtimestamp(p.stat().st_mtime).isoformat()})
+    models = [_model_entry(p) for p in MODELS_DIR.glob("*.joblib")]
     models.sort(key=lambda x: x["mtime"], reverse=True)
     return render_template("model.html", bundle=bundle, models=models, model_labels=MODEL_LABELS)
 

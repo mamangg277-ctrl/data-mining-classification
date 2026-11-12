@@ -36,9 +36,9 @@
 </div>
 
 <div class="row g-4 mb-4">
-  <!-- Manual Input Column -->
-  <div class="col-lg-7">
-    <div class="card h-100">
+  <!-- Manual Input Card -->
+  <div class="col-12">
+    <div class="card">
       <div class="card-header">
         Prediksi Manual (Input Fitur Per Kasus)
       </div>
@@ -143,13 +143,52 @@
           {% endif %}
         </div>
         {% endif %}
+
+        <!-- Recent Manual Predictions -->
+        {% if recent_predictions %}
+        <div class="mt-4">
+          <div class="d-flex justify-content-between align-items-center mb-2">
+            <span class="small fw-bold text-secondary text-uppercase">Riwayat Prediksi Manual</span>
+            <span class="badge bg-light text-dark border">{{ recent_predictions|length }} terakhir</span>
+          </div>
+          <div class="d-flex flex-column gap-2" style="max-height: 340px; overflow-y: auto;">
+            {% for entry in recent_predictions %}
+            <div class="p-3 border rounded bg-white">
+              <div class="d-flex justify-content-between align-items-center mb-2">
+                <span class="text-muted small">{{ entry.created_at[:19]|replace('T', ' ') }}</span>
+                <div class="d-flex align-items-center gap-2">
+                  {% if entry.result.probability is not none %}
+                  <span class="small text-secondary">{{ '%.1f'|format(entry.result.probability * 100) }}%</span>
+                  {% endif %}
+                  <span class="badge {% if entry.result.task_type == 'binary' and entry.result.prediction == entry.result.positive_label %}bg-success{% elif entry.result.task_type == 'binary' %}bg-secondary{% else %}bg-success{% endif %}">
+                    {{ entry.result.prediction }}
+                  </span>
+                </div>
+              </div>
+              <div class="row g-1 small">
+                {% for f, v in entry.inputs.items() %}
+                <div class="col-md-4 col-lg-3">
+                  <span class="text-secondary">{{ f }}:</span>
+                  <span class="text-dark fw-semibold">{{ v if v not in [None, ''] else '-' }}</span>
+                </div>
+                {% endfor %}
+              </div>
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+        {% else %}
+        <div class="mt-4 p-3 border rounded bg-light small text-muted">
+          Belum ada prediksi manual. Hasil prediksi terakhir akan tampil di sini.
+        </div>
+        {% endif %}
       </div>
     </div>
   </div>
 
-  <!-- Batch Prediction Column -->
-  <div class="col-lg-5">
-    <div class="card h-100">
+  <!-- Batch Prediction Card -->
+  <div class="col-12">
+    <div class="card">
       <div class="card-header">
         Prediksi Massal (Batch Scoring)
       </div>

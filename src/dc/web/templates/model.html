@@ -50,7 +50,10 @@
       <table class="table table-hover align-middle mb-0">
         <thead>
           <tr>
-            <th>Model Name</th>
+            <th>Model</th>
+            <th>Target &amp; Tugas</th>
+            <th>Algoritma</th>
+            <th>Performa</th>
             <th>Terakhir Diubah</th>
             <th class="text-end">Aksi</th>
           </tr>
@@ -58,9 +61,66 @@
         <tbody>
           {% for m in models %}
             <tr>
-              <td><strong>{{ m.name }}</strong></td>
-              <td class="text-muted small">{{ m.mtime }}</td>
-              <td class="text-end">
+              <td>
+                <strong>{{ m.name }}</strong>
+                <div class="text-muted small">
+                  {% if m.created_at %}Dibuat {{ m.created_at[:19]|replace('T', ' ') }}{% else %}-{% endif %}
+                </div>
+              </td>
+              <td>
+                {% if m.has_metadata %}
+                  <div><span class="text-muted small">Target:</span> <strong>{{ m.target if m.target is not none else '-' }}</strong></div>
+                  <div class="mt-1 d-flex flex-wrap align-items-center gap-1">
+                    {% if m.task_type %}
+                    <span class="badge {% if m.task_type == 'binary' %}bg-primary-subtle text-primary border border-primary-subtle{% else %}bg-info-subtle text-info border border-info-subtle{% endif %}">
+                      {{ m.task_type }}
+                    </span>
+                    {% endif %}
+                    {% if m.task_type == 'binary' %}
+                      <span class="small text-muted">Positif: {{ m.positive_label if m.positive_label is not none else '-' }}</span>
+                      {% if m.threshold is not none %}<span class="small text-muted">| Ambang: {{ '%.2f'|format(m.threshold) }}</span>{% endif %}
+                    {% elif m.classes %}
+                      <span class="small text-muted">{{ m.class_count or m.classes|length }} kelas: {{ m.classes|join(', ') }}</span>
+                    {% endif %}
+                  </div>
+                {% else %}
+                  <span class="text-muted small">Metadata tidak tersedia</span>
+                {% endif %}
+              </td>
+              <td>
+                {% if m.model_label %}
+                  <strong>{{ m.model_label }}</strong>
+                  <div class="text-muted small">
+                    {{ m.scoring or '-' }}{% if m.cv_folds %} | {{ m.cv_folds }}-fold CV{% endif %}
+                  </div>
+                {% else %}
+                  <span class="text-muted small">-</span>
+                {% endif %}
+              </td>
+              <td>
+                {% if m.performance is not none %}
+                  <div>
+                    <span class="text-muted small">{% if m.metrics.get('f1') is not none %}F1{% else %}Akurasi{% endif %}:</span>
+                    <strong>{{ '%.2f'|format(m.performance * 100) }}%</strong>
+                  </div>
+                {% else %}
+                  <div class="text-muted small">-</div>
+                {% endif %}
+                {% if m.roc_auc is not none %}
+                  <div class="text-muted small">ROC AUC: {{ '%.2f'|format(m.roc_auc * 100) }}%</div>
+                {% endif %}
+                <div class="text-muted small">
+                  {% if m.rows %}{{ m.rows }} baris{% endif %}
+                  {% if m.feature_count %}{% if m.rows %} | {% endif %}{{ m.feature_count }} fitur{% endif %}
+                </div>
+              </td>
+              <td class="text-muted small">{{ m.mtime[:19]|replace('T', ' ') }}</td>
+              <td class="text-end text-nowrap">
+                {% if m.has_metadata %}
+                <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#modelDetails{{ loop.index }}" aria-expanded="false">
+                  Detail
+                </button>
+                {% endif %}
                 <form action="{{ url_for('model_load') }}" method="post" class="d-inline">
                   <input type="hidden" name="path" value="{{ m.path }}">
                   <button class="btn btn-sm btn-primary" type="submit">Load</button>
@@ -73,8 +133,79 @@
                 </form>
               </td>
             </tr>
+            {% if m.has_metadata %}
+            <tr class="collapse" id="modelDetails{{ loop.index }}">
+              <td colspan="6" class="bg-light">
+                <div class="p-3">
+                  <div class="row g-3">
+                    <div class="col-lg-6">
+                      <div class="fw-bold small text-uppercase text-secondary mb-1">Fitur ({{ m.feature_count }})</div>
+                      <div class="d-flex flex-wrap gap-1 mb-3">
+                        {% for f in m.feature_columns %}
+                        <span class="badge bg-light text-dark border">{{ f }}</span>
+                        {% else %}
+                        <span class="text-muted small">Tidak ada data fitur.</span>
+                        {% endfor %}
+                      </div>
+
+                      <div class="fw-bold small text-uppercase text-secondary mb-1">Metrik Uji</div>
+                      <div class="row g-1 small">
+                        {% for label, key in [('Accuracy', 'accuracy'), ('Precision', 'precision'), ('Recall', 'recall'), ('F1', 'f1'), ('ROC AUC', 'roc_auc'), ('Log Loss', 'log_loss')] %}
+                        <div class="col-6 col-md-4">
+                          <span class="text-secondary">{{ label }}:</span>
+                          <strong>{% if m.metrics.get(key) is not none %}{{ '%.4f'|format(m.metrics.get(key)) }}{% else %}-{% endif %}</strong>
+                        </div>
+                        {% endfor %}
+                      </div>
+                    </div>
+
+                    <div class="col-lg-6">
+                      <div class="fw-bold small text-uppercase text-secondary mb-1">Leaderboard Model</div>
+                      {% if m.leaderboard %}
+                      <table class="table table-sm mb-3">
+                        <thead>
+                          <tr>
+                            <th>Model</th>
+                            <th class="text-end">Skor</th>
+                            <th class="text-end">Std</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {% for row in m.leaderboard %}
+                          <tr>
+                            <td>{{ row.label or row.model }}</td>
+                            <td class="text-end">{% if row.score is not none %}{{ '%.4f'|format(row.score) }}{% else %}-{% endif %}</td>
+                            <td class="text-end">{% if row.std is not none %}{{ '%.4f'|format(row.std) }}{% else %}-{% endif %}</td>
+                          </tr>
+                          {% endfor %}
+                        </tbody>
+                      </table>
+                      {% else %}
+                      <div class="text-muted small mb-3">Tidak ada data leaderboard.</div>
+                      {% endif %}
+
+                      <div class="text-muted small">
+                        Versi bundle: {{ m.bundle_version if m.bundle_version is not none else '-' }}
+                        | Seed: {{ m.seed if m.seed is not none else '-' }}
+                        | Model: {{ m.model_name or '-' }}
+                      </div>
+
+                      {% if m.warnings %}
+                      <div class="alert alert-warning small mt-2 mb-0">
+                        <div class="fw-bold">Peringatan</div>
+                        <ul class="mb-0 ps-3">
+                          {% for w in m.warnings %}<li>{{ w }}</li>{% endfor %}
+                        </ul>
+                      </div>
+                      {% endif %}
+                    </div>
+                  </div>
+                </div>
+              </td>
+            </tr>
+            {% endif %}
           {% else %}
-            <tr><td colspan="3" class="text-center text-muted py-4">Belum ada model tersimpan di direktori models/.</td></tr>
+            <tr><td colspan="6" class="text-center text-muted py-4">Belum ada model tersimpan di direktori models/.</td></tr>
           {% endfor %}
         </tbody>
       </table>
