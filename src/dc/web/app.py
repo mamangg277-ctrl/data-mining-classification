@@ -602,8 +602,24 @@ def index():
     return render_template("index.html", model_labels=MODEL_LABELS)
 
 
+def _saved_datasets_context() -> dict[str, Any]:
+    """Context for the saved-dataset picker on the data page."""
+    active_path = _get_active_file_path()
+    return {
+        # Batch prediction inputs live in the upload dir too, but are not datasets.
+        "uploads": [
+            item for item in list_uploads() if not item["name"].startswith("batch_")
+        ],
+        "active_name": active_path.name if active_path else None,
+    }
+
+
 @app.route("/data")
 def data_page():
+    context: dict[str, Any] = {
+        "model_labels": MODEL_LABELS,
+        **_saved_datasets_context(),
+    }
     path = _get_active_file_path()
     if path and path.is_file():
         try:
@@ -615,18 +631,17 @@ def data_page():
             target_options = _target_options(frame)
             preview = frame.head(100).to_dict(orient="records")
             clean_filename = path.name.split("_", 2)[-1] if "_" in path.name else path.name
-            return render_template(
-                "data.html",
-                model_labels=MODEL_LABELS,
+            context.update(
                 filename=clean_filename,
                 shape=frame.shape,
                 columns=list(frame.columns),
                 preview=preview,
                 target_options=target_options,
+                active_name=path.name,
             )
         except Exception:
             pass
-    return render_template("data.html", model_labels=MODEL_LABELS)
+    return render_template("data.html", **context)
 
 
 @app.route("/upload", methods=["POST"])
@@ -661,12 +676,33 @@ def upload():
     return render_template(
         "data.html",
         model_labels=MODEL_LABELS,
+        **_saved_datasets_context(),
         filename=filename,
         shape=frame.shape,
         columns=list(frame.columns),
         preview=preview,
         target_options=target_options,
     )
+
+
+@app.route("/data/load", methods=["POST"])
+def data_load():
+    """Activate a dataset that was uploaded previously."""
+    name = request.form.get("name")
+    path = _safe_child(UPLOAD_DIR, name)
+    if path is None or not path.is_file() or path.suffix.lower() not in FILE_TYPES:
+        flash("Dataset tersimpan tidak ditemukan.", "error")
+        return redirect(url_for("data_page"))
+    try:
+        frame = load_dataframe(str(path))
+    except Exception as e:
+        flash(f"Gagal memuat dataset: {e}", "error")
+        return redirect(url_for("data_page"))
+    session["current_file"] = str(path)
+    session["current_columns"] = list(frame.columns)
+    session["target"] = choose_default_target(frame)
+    flash(f"Dataset {path.name} dimuat kembali.", "success")
+    return redirect(url_for("data_page"))
 
 
 def _inspect_and_save(frame: pd.DataFrame, path: Path, target: str | None) -> dict[str, Any]:

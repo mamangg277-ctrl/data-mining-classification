@@ -30,6 +30,52 @@
   </div>
 </div>
 
+<!-- Saved Datasets Section -->
+<div class="card mb-4">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <span>Dataset Tersimpan (Muat Ulang)</span>
+    <span class="badge bg-light text-muted border">{{ uploads|length }} berkas</span>
+  </div>
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-hover align-middle mb-0">
+        <thead>
+          <tr>
+            <th>Nama Berkas</th>
+            <th>Ukuran</th>
+            <th>Waktu</th>
+            <th class="text-end">Aksi</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in uploads %}
+            <tr class="{% if item.name == active_name %}table-primary{% endif %}">
+              <td>
+                <strong>{{ item.name }}</strong>
+                {% if item.name == active_name %}
+                  <span class="badge bg-primary ms-1">Aktif</span>
+                {% endif %}
+              </td>
+              <td class="small text-muted">{{ item.size_text }}</td>
+              <td class="small text-muted">{{ item.mtime }}</td>
+              <td class="text-end text-nowrap">
+                <form action="{{ url_for('data_load') }}" method="post" class="d-inline">
+                  <input type="hidden" name="name" value="{{ item.name }}">
+                  <button class="btn btn-sm {% if item.name == active_name %}btn-outline-primary{% else %}btn-primary{% endif %}" type="submit">
+                    {% if item.name == active_name %}Muat Ulang{% else %}Muat{% endif %}
+                  </button>
+                </form>
+              </td>
+            </tr>
+          {% else %}
+            <tr><td colspan="4" class="text-center text-muted py-3">Belum ada dataset tersimpan. Unggah berkas di atas terlebih dahulu.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
 {% if filename %}
 <!-- Dataset Summary & Preview -->
 <div class="card mb-4">

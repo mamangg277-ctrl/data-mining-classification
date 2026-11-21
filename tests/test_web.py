@@ -707,3 +707,73 @@ def test_multiclass_train_evaluate_and_predict(storage_dirs, multiclass_frame, t
     html = response.get_data(as_text=True)
     assert "Hasil Prediksi" in html
     assert "terpilih" in html
+
+
+def test_data_page_lists_saved_datasets(storage_dirs):
+    (storage_dirs["uploads"] / "20260101_000000_first.csv").write_text("a\n1\n", encoding="utf-8")
+    (storage_dirs["uploads"] / "20260102_000000_second.csv").write_text("b\n2\n", encoding="utf-8")
+    (storage_dirs["uploads"] / "batch_20260103_000000_input.csv").write_text(
+        "x\n3\n", encoding="utf-8"
+    )
+
+    response = app.test_client().get("/data")
+
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert "Dataset Tersimpan" in html
+    assert "20260101_000000_first.csv" in html
+    assert "20260102_000000_second.csv" in html
+    assert "batch_20260103_000000_input.csv" not in html
+    assert html.count('action="/data/load"') == 2
+
+
+def test_data_load_activates_saved_dataset(storage_dirs):
+    path = storage_dirs["uploads"] / "20260102_000000_data.csv"
+    sample_frame().to_csv(path, index=False)
+    client = app.test_client()
+
+    response = client.post("/data/load", data={"name": path.name})
+
+    assert response.status_code == 302
+    with client.session_transaction() as session:
+        assert session["current_file"] == str(path)
+        assert session["current_columns"] == ["age", "sex", "approved"]
+        assert session["target"] == "approved"
+
+    html = client.get("/data").get_data(as_text=True)
+    assert "20260102_000000_data.csv" in html
+    assert "Aktif" in html
+    assert "6 baris" in html
+    assert "3 kolom" in html
+
+
+def test_data_load_rejects_path_traversal(storage_dirs, tmp_path):
+    outside = tmp_path / "secret.csv"
+    outside.write_text("a\n1\n", encoding="utf-8")
+    client = app.test_client()
+
+    response = client.post("/data/load", data={"name": "../secret.csv"})
+
+    assert response.status_code == 302
+    assert outside.exists()
+    with client.session_transaction() as session:
+        assert "current_file" not in session
+
+
+def test_data_load_reports_missing_and_unreadable_datasets(storage_dirs):
+    broken = storage_dirs["uploads"] / "broken.csv"
+    broken.write_text("", encoding="utf-8")
+    client = app.test_client()
+
+    missing_page = client.post(
+        "/data/load", data={"name": "missing.csv"}, follow_redirects=True
+    )
+    assert "Dataset tersimpan tidak ditemukan." in missing_page.get_data(as_text=True)
+
+    broken_page = client.post(
+        "/data/load", data={"name": broken.name}, follow_redirects=True
+    )
+    assert "Gagal memuat dataset" in broken_page.get_data(as_text=True)
+
+    with client.session_transaction() as session:
+        assert "current_file" not in session
